@@ -1,0 +1,34 @@
+# 依赖
+node_modules/
+
+# 运行时数据（SQLite 库与截图）
+server/data/
+
+# 本地配置（首次运行自动生成，含随机 token）
+server/config.json
+
+# 日志
+*.log
+logs/
+
+# 环境与密钥
+.env
+.env.*
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+
+# 操作系统
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 工具工作目录（ZCode / Mimosa）
+.zcode/
+.mimosa/
+
+# AI 协作工作流文件（本地保留，不入库）
+AGENTS.md
+handoff.md
+reports/

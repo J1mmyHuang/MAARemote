@@ -1,0 +1,31 @@
+# ============================================================================
+# MAARemote —— cloudflared named tunnel 配置示例（本地托管隧道）
+# ----------------------------------------------------------------------------
+# 使用方法：
+#   1. 执行 `cloudflared tunnel create maa-remote` 后记住输出的隧道 UUID，
+#      凭据文件默认生成在 %USERPROFILE%\.cloudflared\<TUNNEL_ID>.json
+#   2. 把本文件复制为 %USERPROFILE%\.cloudflared\config.yml（前台试跑时的默认读取路径）
+#   3. 替换下面 3 处占位符：
+#        <TUNNEL_ID>            → 隧道 UUID（cloudflared tunnel list 可查）
+#        <CREDENTIALS_JSON_PATH>→ 凭据 json 完整路径，通常是
+#                                 %USERPROFILE%\.cloudflared\<TUNNEL_ID>.json
+#        maa.example.com        → 你确定后的监控子域名（全局替换）
+#   4. 注册 Windows 服务常驻（cloudflared service install）时注意：
+#      服务以 LocalSystem 运行，cloudflared 会改读
+#      C:\Windows\System32\config\systemprofile\.cloudflared\config.yml
+#      —— 需把本文件与凭据 json 一并复制到该目录（详见 DEPLOY.md「常驻」一节）。
+# ============================================================================
+
+tunnel: <TUNNEL_ID>
+credentials-file: <CREDENTIALS_JSON_PATH>
+
+# 流量入口规则：自上而下逐条匹配，必须以一条兜底规则结尾。
+ingress:
+  # 监控子域名 → 本机 MAARemote 服务。
+  # 服务端固定监听 127.0.0.1（host 硬编码），端口读 server/config.json 的 port 字段（默认 24325）。
+  # 若你修改了 config.json 的 port，请同步修改下面的端口号。
+  - hostname: maa.example.com
+    service: http://127.0.0.1:24325
+
+  # 兜底：其余所有请求一律返回 404（不允许未配置的域名借用本隧道）。
+  - service: http_status:404

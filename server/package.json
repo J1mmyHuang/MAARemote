@@ -1,0 +1,18 @@
+{
+  "name": "maaremote-server",
+  "version": "0.1.0",
+  "description": "MAA 桌面端远程监控 WebApp 后端：实现 MAA 官方远程控制协议（getTask / reportStatus）",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "fastify": "^5.6.2"
+  }
+}
