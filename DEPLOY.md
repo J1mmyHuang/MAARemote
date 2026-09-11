@@ -48,7 +48,7 @@ pwsh -NoProfile -File start.ps1
   ```
 
 - 端口被占用时脚本会打印占用进程的 PID/进程名并退出，不会重复启动；若确认是本服务在跑，直接访问即可（脚本会探测 `/api/overview` 返回 401 自动识别并提示）。
-- 停止：前台运行，**Ctrl+C** 即优雅退出（服务端自带 SIGINT/SIGTERM/SIGBREAK 处理）。
+- 停止：前台运行，**Ctrl+C** 即优雅退出（服务端自带 SIGINT/SIGTERM/SIGBREAK 处理）；后台常驻与开机自启见 §6（`tray.ps1` 托盘），也可随时用 `pwsh -NoProfile -File tray.ps1 -Action stop` 停止。
 - 换端口：编辑 `server\config.json` 的 `port` 后重启（`deploy\cloudflared-config.yml` 里的端口要同步改）。
 
 ## 3. Cloudflare Tunnel（公网接入主线）
@@ -143,9 +143,43 @@ if ((Get-Service cloudflared).Status -ne 'Running') { Start-Service cloudflared 
 - 仪表盘 API 均需 `dashboardToken` 鉴权（Bearer 头或 `?token=`；具体交互由前端实现）。
 - 部署后自检：`https://maa.example.com/api/overview` 无 token → 401（公网可达 + 鉴权生效）；带 token → 200。
 
-## 6. 常驻方案（服务端侧：NSSM）
+## 6. 常驻方案（托盘 tray.ps1 主线；NSSM 备选）
 
-§3.6 已解决 **cloudflared/tunnel** 的常驻；MAARemote 服务端本身（`node src\index.js`）建议用 **NSSM** 注册为 Windows 服务，实现开机自启、崩溃自动拉起：
+### 6.1 主线：系统托盘 tray.ps1（登录自启 / 日常挂机，推荐）
+
+仓库根目录的 `tray.ps1` 是「托盘 GUI + 命令行」双形态一体脚本：无参数运行即托盘常驻，带 `-Action` 即命令行工具。状态判定与 `start.ps1` 同一套真相源（`server\config.json` 的 `port` + `/api/overview` 无 token 恒 401），只有三种状态：**运行中 / 已停止 / 端口被占用**。
+
+**日常使用（托盘）**：
+
+```powershell
+pwsh -NoProfile -File tray.ps1
+```
+
+任务栏托盘出现 MAARemote 图标（**绿 = 运行中、灰 = 已停止、红 = 端口被占用**），悬停显示状态，右键菜单：状态行、启动 / 停止 / 重启 Remote、开机自启勾选、退出。菜单「退出」仅关闭托盘，**不停止服务**（服务是独立进程，MAA 轮询不中断）。
+
+**命令行（可脚本化；退出码 成功 = 0 / 失败 = 1）**：
+
+```powershell
+pwsh -NoProfile -File tray.ps1 -Action status          # 例：STATUS=running PID=1234 PORT=24325
+pwsh -NoProfile -File tray.ps1 -Action start           # 已运行则幂等跳过；端口被占用则拒绝
+pwsh -NoProfile -File tray.ps1 -Action stop            # 按端口找 PID 结束（仅本服务，占用者拒绝杀）
+pwsh -NoProfile -File tray.ps1 -Action restart
+pwsh -NoProfile -File tray.ps1 -Action autostart-on    # 开机自启（写 HKCU Run 键，无需管理员）
+pwsh -NoProfile -File tray.ps1 -Action autostart-off
+```
+
+要点：
+
+- **开机自启**：`-Action autostart-on`（或托盘菜单勾选「开机自启」）写入当前用户 Run 键 `HKCU\...\CurrentVersion\Run\MAARemoteTray`，登录后托盘自动常驻，需要时从托盘/开机即拉起服务；`autostart-off` 取消。
+- **接管语义**：不关心服务由谁启动——`start.ps1` 或手动 `node src\index.js` 先起的服务，托盘/CLI 照样显示「运行中」并可停止（按端口找 PID，401 探测确认是本服务）。
+- **后台运行**：托盘/CLI 启动的服务是隐藏窗口进程，stdout/stderr 写入 `logs\service-out-<时间戳>.log` / `service-err-<时间戳>.log`（每次启动新文件，`logs\` 已被 .gitignore 排除）。
+- **停止方式**：托盘/CLI 的停止为强制结束进程；SQLite 已开 WAL（`server\src\db.js`），已提交数据不受影响，可放心用。
+- **限流友好**：托盘状态轮询 10 秒一次、仅端口被监听时才探测，不会触发 `/api/*` 的 401 失败限流（同 IP 60 秒 20 次）。
+- 建议先按 §2 用 `start.ps1` 跑通一次（确认依赖安装与服务能正常起），再切换到托盘常驻。
+
+### 6.2 备选：NSSM 注册 Windows 服务（无登录会话场景）
+
+托盘方案要求一个**已登录的用户会话**（Run 键随登录触发）。若需要**不登录也常驻**（如重启后无人值守自动上线），改用 NSSM 把服务端注册为 Windows 服务：
 
 1. 下载 NSSM：<https://nssm.cc/release/nssm-2.24.zip>，解压后取 `win64\nssm.exe` 放到一个**仓库外**的固定目录（如 `C:\Tools\nssm\`，避免二进制混入仓库），并在 PATH 中或用完整路径调用。
 2. 管理员 pwsh 注册（`$node = (Get-Command node).Source` 先查 node 实际路径）：
@@ -160,7 +194,7 @@ if ((Get-Service cloudflared).Status -ne 'Running') { Start-Service cloudflared 
    nssm start MAARemote
    ```
 
-   （`logs\` 已被 .gitignore 排除；用 NSSM 常驻后，日常不再需要 `start.ps1`，它是前台运行/调试用的。）
+   （`logs\` 已被 .gitignore 排除；用 NSSM 常驻后，日常不再需要 `start.ps1` 与托盘的启动动作，它们保留作前台运行/调试与状态查看用。）
 3. 管理：`Get-Service MAARemote`、`nssm restart MAARemote`、`nssm remove MAARemote confirm`（卸载）。
 
 **电源计划（必做）**：睡眠会同时停掉 MAA、模拟器、服务端。系统设置 → 电源 → 屏幕和睡眠 →「接通电源时休眠」设为**从不**（屏幕可正常关闭）。命令行一键设置：`powercfg /change standby-timeout-ac 0`。
@@ -178,6 +212,7 @@ if ((Get-Service cloudflared).Status -ne 'Running') { Start-Service cloudflared 
 
 | 现象 | 排查 / 处理 |
 |---|---|
+| **托盘/CLI 显示「端口被占用」、启动或停止被拒** | `pwsh -NoProfile -File tray.ps1 -Action status` 看 PID：是残留的本服务旧进程 → `-Action stop`；是别的程序 → 改 `server\config.json` 的 `port`（托盘只杀经 401 探测确认的本服务进程） |
 | **端口被占用**（start.ps1 启动失败） | 先执行 `Get-NetTCPConnection -LocalPort 24325 -State Listen`，从结果取 `OwningProcess` 列，再 `Get-Process -Id <PID>` 看进程名；是残留旧服务 → `Stop-Process -Id <PID>`；是别的程序 → 改 `server\config.json` 的 `port` |
 | **浏览器访问域名 502** | tunnel 通但回源失败：先确认 MAARemote 在跑（§2 的 401 自检）；没在跑 → `start.ps1` 或 `nssm start MAARemote`。`cloudflared tunnel info maa-remote` 看连接数 |
 | **域名打不开 / tunnel 未连接** | `Get-Service cloudflared` 看服务；服务启动失败 → 检查 §3.6 的 systemprofile 路径里有没有 `config.yml` **和** 凭据 json；前台 `cloudflared tunnel run maa-remote` 看报错 |
@@ -195,7 +230,7 @@ if ((Get-Service cloudflared).Status -ne 'Running') { Start-Service cloudflared 
 - [ ] 已全局替换 `maa.example.com` 为真实子域名（本文档 + `deploy\cloudflared-config.yml`）
 - [ ] `cloudflared tunnel login / create / route dns` 完成，前台 `tunnel run` 试跑 401 自检通过
 - [ ] `cloudflared service install` 完成，systemprofile 路径已放 `config.yml` + 凭据 json，`Get-Service cloudflared` 运行中
-- [ ] （可选）NSSM 已注册 MAARemote 服务并启动，日志目录 `logs\` 可写
+- [ ] （可选）常驻方案已配置：托盘 `tray.ps1` + `autostart-on`（推荐，见 §6.1）或 NSSM 服务（无登录会话场景，见 §6.2）；`logs\` 目录可写
 - [ ] 电源计划「接通电源时休眠 = 从不」
 - [ ] MAA「远程控制」两个端点 + 用户标识符（`maaUserToken`）已填，域名已替换
 - [ ] MAA 首连 401 → 仪表盘 pending 核对设备标识符 → 批准 → MAA 开始取任务

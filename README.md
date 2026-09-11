@@ -57,7 +57,7 @@ node src/index.js
 
 完整步骤见 **[DEPLOY.md](DEPLOY.md)**，要点：
 
-1. **服务常驻**：日常用 `start.ps1` 前台运行；长期挂机按 DEPLOY.md 用 NSSM 注册为 Windows 服务（开机自启），并把电源计划设为不休眠。
+1. **服务常驻**：日常用 `start.ps1` 前台运行；长期挂机推荐系统托盘 `pwsh -NoProfile -File tray.ps1`（右键菜单启停/重启/开机自启，命令行 `tray.ps1 -Action start|stop|restart|status|autostart-on|autostart-off` 同效，见 DEPLOY.md §6），并把电源计划设为不休眠。
 2. **公网接入（推荐 Cloudflare Tunnel）**：`winget install Cloudflare.cloudflared` → `cloudflared tunnel login`（浏览器授权）→ `tunnel create` → `tunnel route dns`（绑定你的子域名）→ 按 `deploy\cloudflared-config.yml` 示例放置配置与凭据 → `cloudflared service install`。全程**零防火墙入站规则**（服务仅监听 127.0.0.1，cloudflared 只做出站连接），HTTPS 由 Cloudflare 自动终结。
 3. **MAA 接入**：MAA「设置 → 远程控制」两个端点填 `https://<你的域名>/maa/getTask` 与 `.../maa/reportStatus`，用户标识符填 `config.json` 的 `maaUserToken`；首次连接 401 后在仪表盘「待批准设备」中核对设备标识符并批准（见上方 API）。
 
@@ -100,7 +100,8 @@ node src/index.js
 
 ```
 start.ps1         一键启动（安装依赖 + 端口检测 + 前台运行）
-DEPLOY.md         部署指南（Cloudflare Tunnel / NSSM / MAA 接入 / 故障排查）
+tray.ps1          系统托盘常驻 + 命令行启停（开机自启，见 DEPLOY.md §6）
+DEPLOY.md         部署指南（Cloudflare Tunnel / 托盘与 NSSM 常驻 / MAA 接入 / 故障排查）
 server/           后端（Node.js + Fastify + SQLite）
   src/            入口、路由、调度器
   data/           运行时生成：maa.db、screenshots/（已忽略）
