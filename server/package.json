@@ -9,7 +9,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",

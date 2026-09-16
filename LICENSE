@@ -1,3 +1,10 @@
+MAARemote 后端许可证说明
+========================
+
+本根目录 LICENSE 仅适用于 `server/` 后端代码，后端采用 Mozilla Public License 2.0（MPL-2.0）。
+前端 `web/` 采用 GNU Affero General Public License v3.0 或更高版本，详见 `web/LICENSE`。
+本仓库因此包含两个分别适用于不同目录的许可证；它们不是对同一份代码的联合许可。
+
 Mozilla Public License Version 2.0
 ==================================
 

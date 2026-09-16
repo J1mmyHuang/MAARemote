@@ -6,6 +6,18 @@ server/data/
 
 # 本地配置（首次运行自动生成，含随机 token）
 server/config.json
+server/config.json.*
+server/config.*.json
+!server/config.example.json
+!server/config.sample.json
+
+# 数据库副本及事务文件（可能包含设备标识、任务与共享密钥）
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
 
 # 日志
 *.log
@@ -14,6 +26,33 @@ logs/
 # 环境与密钥
 .env
 .env.*
+!.env.example
+!.env.sample
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+.cloudflared/
+deploy/credentials/
+deploy/*.local.yml
+deploy/*.local.yaml
+deploy/*.credentials.json
+
+# 本地备份与浏览器调试产物（可能包含 Token、截图或请求内容）
+backups/
+*.bak
+*.backup
+*.bundle
+*.har
+playwright/.auth/
+playwright-report/
+test-results/
+coverage/
+tmp/
+temp/
 
 # 编辑器 / IDE
 .vscode/
@@ -27,8 +66,15 @@ Desktop.ini
 # 工具工作目录（ZCode / Mimosa）
 .zcode/
 .mimosa/
+.codex/
+.claude/
+.agents/
 
 # AI 协作工作流文件（本地保留，不入库）
 AGENTS.md
 handoff.md
 reports/
+
+## 构建缓存与进程文件
+.cache/
+*.pid

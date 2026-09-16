@@ -89,6 +89,13 @@ const CONFIRM_REQUIRED_TYPES = new Set(['StopTask', 'Settings-ConnectAddress', '
 export default async function apiRoutes(fastify, opts) {
   const { config, db, bus } = opts;
 
+  // 私密 JSON、截图及鉴权错误均不得进入浏览器或代理缓存。
+  fastify.addHook('onRequest', async (_request, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('X-Content-Type-Options', 'nosniff');
+  });
+
   // 统一事件入口（与入口文件注入的 recordEvent 等价）：入库 + 广播一次完成。
   // api.js 自身持有 db 与 bus，就地构造即可，不必改 index.js 的注册参数。
   const recordEvent = (eventOpts) => recordAndPublishEvent(db, bus, eventOpts);
@@ -297,7 +304,9 @@ export default async function apiRoutes(fastify, opts) {
     const res = reply.raw;
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache, no-transform',
+      'cache-control': 'private, no-store, no-transform',
+      'referrer-policy': 'no-referrer',
+      'x-content-type-options': 'nosniff',
       connection: 'keep-alive',
       'x-accel-buffering': 'no', // 若日后加反代，禁其缓冲 SSE
     });

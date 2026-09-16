@@ -30,6 +30,8 @@ const MONITOR_TYPES = new Set(['HeartBeat', 'CaptureImageNow']);
 // [中B] getTask 单独 bodyLimit：合法请求体仅几十字节（user+device 两个短字符串），64KB 封死
 //       匿名大包 DoS 放大面；reportStatus 不设路由级上限，沿用实例级 100MB（截图需要）。
 const GET_TASK_BODY_LIMIT_BYTES = 64 * 1024;
+// reportStatus 的大包额度仅供图片；设备标识、任务标识与心跳仍受小字段预算约束。
+const METADATA_LIMIT_BYTES = 64 * 1024;
 // [低2] getTask 403（user 不匹配）按来源 IP 限频：60s 滑动窗口内最多 10 次失败，第 11 次起 429。
 //       只统计鉴权失败流量；user 正常的轮询（含 401 待批准设备）不进限流器。
 const GETTASK_FAIL_WINDOW_MS = 60000;
@@ -53,7 +55,7 @@ const SQL_MARK_ONE_DISPATCHED =
   "UPDATE tasks SET status = 'dispatched', dispatched_at = ? WHERE id = ? AND status = 'queued'";
 const SQL_PENDING_TASKS =
   "SELECT id, type, params FROM tasks WHERE device_id = ? AND status IN ('queued', 'dispatched', 'running') ORDER BY created_at ASC, rowid ASC";
-const SQL_GET_TASK = 'SELECT * FROM tasks WHERE id = ?';
+const SQL_GET_TASK = 'SELECT * FROM tasks WHERE id = ? AND device_id = ?';
 // [低3] 终结 UPDATE 带状态条件：仅 queued/dispatched/running → success/failed 可转换；
 //       已终结（success/failed/stale）行不再被覆盖，重复/迟到回报 changes=0。
 const SQL_FINISH_TASK =
@@ -214,6 +216,9 @@ export default async function maaRoutes(fastify, opts) {
     if (!safeEqual(user, config.maaUserToken)) {
       return reply.code(403).send({ ok: false, error: 'user_mismatch' });
     }
+    if (Buffer.byteLength(device, 'utf8') + Buffer.byteLength(task, 'utf8') > METADATA_LIMIT_BYTES) {
+      return reply.code(400).send({ ok: false, error: 'metadata_too_large' });
+    }
 
     const deviceId = deviceIdOf(user, device);
     const now = Date.now();
@@ -234,7 +239,8 @@ export default async function maaRoutes(fastify, opts) {
       return reply.code(401).send({ ok: false, error: 'device_not_approved' });
     }
 
-    const taskRow = db.prepare(SQL_GET_TASK).get(task);
+    // 在读取任务类型和触发任何副作用之前绑定回报设备；跨设备与未知任务统一处理。
+    const taskRow = db.prepare(SQL_GET_TASK).get(task, deviceId);
     if (!taskRow) {
       // MAA 不读该响应、失败不重试；未知任务仅记录后返回 200，避免 MAA 侧无意义等待
       fastify.log.warn({ task }, 'reportStatus：未知任务 id');
@@ -264,6 +270,9 @@ export default async function maaRoutes(fastify, opts) {
     // 事件纪律：HeartBeat 完全不写任何事件（含 task_finished）。
     if (taskRow.type === 'HeartBeat') {
       const observed = typeof payload === 'string' ? payload : '';
+      if (Buffer.byteLength(observed, 'utf8') > METADATA_LIMIT_BYTES) {
+        return reply.code(400).send({ ok: false, error: 'metadata_too_large' });
+      }
       db.prepare(SQL_SET_CURRENT_TASK).run(observed.length > 0 ? observed : null, deviceId);
       if (observed.length > 0) {
         // running 的唯一来源：仅当 payload 对上本设备 queued/dispatched 的任务才转换

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light" data-theme-preference="system">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f7f8fa">
+    <title>MAA Remote</title>
+    <script>
+      (function () {
+        try {
+          var preference = localStorage.getItem('maaremote.theme-preference');
+          if (preference !== 'light' && preference !== 'dark' && preference !== 'system') preference = 'system';
+          var dark = preference === 'dark' || (preference === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+          document.documentElement.dataset.themePreference = preference;
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (_) {}
+      }());
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=20260913-4">
+  </head>
+  <body>
+    <div id="app" aria-live="polite">
+      <main class="boot-screen" aria-label="正在加载仪表盘">
+        <div class="boot-mark" aria-hidden="true">M</div>
+        <p>正在连接仪表盘</p>
+      </main>
+    </div>
+    <script type="module" src="/js/app.js?v=20260913-security1"></script>
+  </body>
+</html>

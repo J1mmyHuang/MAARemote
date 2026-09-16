@@ -1,4 +1,6 @@
-# MAARemote — MAA 桌面端远程监控 WebApp（后端）
+# MAARemote — MAA 桌面端远程监控 WebApp
+
+> 本文只使用示例地址和占位符。真实 token、域名、Tunnel UUID、凭据路径和设备标识符只应保存在本机，绝不要提交到 Git 或粘贴到公开渠道。
 
 为 Windows 上的 [MAA 桌面端](https://github.com/MaaAssistantArknights/MaaAssistantArknights)（明日方舟助手）实现官方**远程控制协议**的服务端：监控任务进度、实时截图，并支持远程下发指令。前端仪表盘（移动端优先，任意现代浏览器访问）由本人另行设计实现，对接本项目提供的 API。
 
@@ -33,6 +35,8 @@ MAA 桌面端在「设置 → 远程控制」中填入本服务端的两个端�
 
 ## 快速开始（本机联调）
 
+### 1. 启动服务
+
 ```powershell
 # 一键启动：自动安装依赖、检测端口占用、前台运行（Ctrl+C 优雅退出）
 pwsh -NoProfile -File .\start.ps1
@@ -43,7 +47,11 @@ npm install
 node src/index.js
 ```
 
-首次运行自动生成 `server/config.json`（含随机 token，已被 `.gitignore` 忽略，勿提交）。在 MAA「设置 → 远程控制」填入：
+首次运行自动生成 `server/config.json`（含随机 token，已被 `.gitignore` 忽略，勿提交）。
+
+### 2. 接入 MAA
+
+在 MAA「设置 → 远程控制」填入：
 
 | 配置项 | 值 |
 |---|---|
@@ -52,6 +60,36 @@ node src/index.js
 | 用户标识符 | `config.json` 中的 `maaUserToken` |
 
 设备标识符在 MAA 界面复制；首次连接返回 401，调用 `POST /api/devices/:id/approve`（带 `dashboardToken`）批准后放行。
+
+### 3. 公网接入
+
+推荐使用 Cloudflare Tunnel。安装并登录 `cloudflared`，创建自己的 Tunnel 和 DNS 记录，再按 [deploy/cloudflared-config.yml](deploy/cloudflared-config.yml) 中的占位符配置转发到 `http://127.0.0.1:24325`。随后把 MAA 两个端点改为 `https://<你的域名>/maa/getTask` 与 `https://<你的域名>/maa/reportStatus`。完整常驻步骤见 [DEPLOY.md](DEPLOY.md)。
+
+没有域名时也可以使用 FRP：让有公网 IP 的服务器运行 `frps`，Windows 主机运行 `frpc`，将 `127.0.0.1:24325` 转发到公网端口。以下示例**目前未经过本项目实机测试**：
+
+```toml
+# frps.toml（公网服务器）
+bindPort = 7000
+auth.method = "token"
+auth.token = "<服务端随机值>"
+```
+
+```toml
+# frpc.toml（Windows 主机）
+serverAddr = "<公网服务器 IP>"
+serverPort = 7000
+auth.method = "token"
+auth.token = "<与 frps 相同的本机秘密>"
+
+[[proxies]]
+name = "maa-remote"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 24325
+remotePort = 24325
+```
+
+启动两端后，使用 `http://<公网服务器 IP>:24325/maa/getTask` 和对应的 `/maa/reportStatus`。FRP 直连通常没有 HTTPS，生产使用前应增加 TLS 反向代理和访问控制。真实地址与密钥不要提交到 Git。
 
 ## 部署（公网访问）
 
@@ -107,16 +145,21 @@ server/           后端（Node.js + Fastify + SQLite）
   data/           运行时生成：maa.db、screenshots/（已忽略）
   tools/          mock-maa.js 模拟客户端（自测用）
 deploy/           cloudflared 隧道配置示例
-web/              前端（另行设计实现，预留）
+web/              前端（AGPL-3.0-or-later）
 实现报告.md        方案设计权威文档
-LICENSE           MPL-2.0
+LICENSE           后端 MPL-2.0
+web/LICENSE       前端 AGPL-3.0-or-later
 ```
 
 ## 致谢
 
 - [MaaAssistantArknights](https://github.com/MaaAssistantArknights/MaaAssistantArknights) —— MAA 桌面端及其公开的远程控制协议，本项目因它而生；
 - [GLM-5.3 家族（Z.ai）](https://z.ai) —— 本项目的方案研究与全部代码实现由 GLM-5.3 / GLM-5.3-Flash 与作者协作完成。
+- [Home Assistant Demo Dashboard](https://demo.home-assistant.io/#/lovelace/home) —— 仪表盘信息架构与卡片式家庭自动化控制界面提供了 UI 设计参考。
+- [OpenAI](https://openai.com/) —— GPT-5.6 家族与 GPT-6 Astra 参与了本项目的研究、实现与文档整理。
 
 ## 许可证
 
-[MPL-2.0](LICENSE)（Mozilla Public License 2.0）。本项目是 MAA 官方远程控制协议的独立实现，未复制/链接 MAA 代码，不构成 MAA 的衍生作品。
+- `server/` 后端代码采用 [MPL-2.0](LICENSE)。
+- `web/` 前端代码采用 [GNU AGPL-3.0-or-later](web/LICENSE)。
+- 本项目是 MAA 官方远程控制协议的独立实现，未复制或链接 MAA 代码；MAA 及其商标归其各自权利人所有。

@@ -3,6 +3,8 @@
 // 说明：监听地址固定 127.0.0.1（安全默认，不向局域网暴露）；
 // 本机 mock 联调足够用，日后 cloudflared Tunnel 也是在本机回源（localhost 指向本服务），无需改为 0.0.0.0。
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { loadOrCreateConfig, SCREENSHOT_DIR } from './config.js';
 import { openDb } from './db.js';
@@ -10,6 +12,7 @@ import { createEventBus, recordAndPublishEvent } from './eventbus.js';
 import maaRoutes from './routes/maa.js';
 import apiRoutes from './routes/api.js';
 import { startSchedulers } from './scheduler.js';
+import staticWeb from './static-web.js';
 
 // 1. 配置：首次运行自动生成 server/config.json（含随机 token）
 const config = loadOrCreateConfig();
@@ -53,6 +56,9 @@ const fastify = Fastify({
 await fastify.register(maaRoutes, { config, db, recordEvent });
 // /api/*：仪表盘 API（插件内部注册 dashboardToken 鉴权钩子，仅作用于该前缀）
 await fastify.register(apiRoutes, { prefix: '/api', config, db, bus });
+// 仪表盘前端：与 API/MAA 同源；插件会保留这两个前缀的既有路由语义。
+const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web');
+await fastify.register(staticWeb, { webRoot });
 
 // 5. 后台协程：离线检测器 + stale 回收器（含事件写入与广播）
 const stopSchedulers = startSchedulers({ config, db, bus, log: fastify.log, recordEvent });
