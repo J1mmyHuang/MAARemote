@@ -1,0 +1,10 @@
+{
+  "name": "MAARemote",
+  "install": "cd server && npm install --no-fund --no-audit",
+  "terminals": [
+    {
+      "name": "server",
+      "command": "cd server && node src/index.js"
+    }
+  ]
+}
