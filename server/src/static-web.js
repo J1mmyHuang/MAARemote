@@ -57,7 +57,6 @@ async function readStaticFile(webRoot, requestedPath) {
 
 export default async function staticWeb(fastify, options) {
   const webRoot = await fs.realpath(options.webRoot);
-  const indexPath = path.join(webRoot, 'index.html');
 
   // 仪表盘可执行远程操作，禁止外站套框诱导点击；不影响既有脚本和样式。
   fastify.addHook('onRequest', async (_request, reply) => {
@@ -68,7 +67,7 @@ export default async function staticWeb(fastify, options) {
   });
 
   async function sendIndex(reply) {
-    const index = await readStaticFile(webRoot, indexPath);
+    const index = await readStaticFile(webRoot, 'index.html');
     if (!index) return reply.code(404).send();
     return reply
       .header('X-Content-Type-Options', 'nosniff')
