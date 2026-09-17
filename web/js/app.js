@@ -141,6 +141,10 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function formatNoteHtml(note) {
+  return escapeHtml(note).replaceAll('\n', '<br>');
+}
+
 function attr(value) {
   return escapeHtml(value);
 }
@@ -193,7 +197,9 @@ function isPendingDeviceId(id) {
 function reconcileSelectedDevice() {
   const devices = approvedDevices();
   if (devices.some((device) => device.device === state.selectedDevice)) return;
-  state.selectedDevice = devices.length === 1 ? devices[0].device : '';
+  // 无有效选择时自动绑定：优先已批准且在线，否则任一已批准；从不绑定 pending。
+  const preferred = devices.find((device) => device.online) ?? devices[0];
+  state.selectedDevice = preferred?.device ?? '';
   writeStoredValue(DEVICE_STORAGE_KEY, state.selectedDevice);
 }
 
@@ -300,7 +306,12 @@ function currentTaskDisplay(device) {
       : { title: '请选择设备', note: '选择已批准设备后才能发送操作。' };
   }
   if (!device.approved) return { title: '等待设备批准', note: '批准后才可以发送远程命令。' };
-  if (!device.online) return { title: '本机没在线', note: '请检查：睡眠 / 托盘服务 / Tunnel。' };
+  if (!device.online) {
+    return {
+      title: '本机没在线',
+      note: '请检查：\n• 睡眠\n• 托盘服务\n• Tunnel',
+    };
+  }
   if (!device.current_task_id) return { title: '当前空闲', note: '暂无 HeartBeat 观测到的顺序任务。' };
   const task = currentTaskForDevice(device);
   return {
@@ -462,8 +473,8 @@ function renderCurrentTask() {
         ${device ? `<span class="status-line ${deviceStatus(device).className}"><span class="status-dot" aria-hidden="true"></span>${deviceStatus(device).label}</span>` : ''}
       </div>
       <div class="current-task-main">${pendingAttention ? '等待批准' : escapeHtml(current.title)}</div>
-      <p class="task-note">${pendingAttention ? '有设备在敲门，先去批准。' : escapeHtml(current.note)}</p>
-      ${pendingAttention && device ? `<p class="task-note">当前已选设备：${escapeHtml(current.title)}。${escapeHtml(current.note)}</p>` : ''}
+      <p class="task-note">${pendingAttention ? '有设备在敲门，先去批准。' : formatNoteHtml(current.note)}</p>
+      ${pendingAttention && device ? `<p class="task-note">当前已选设备：${escapeHtml(current.title)}。${formatNoteHtml(current.note)}</p>` : ''}
       ${pendingAttention ? '<button class="primary-button" type="button" data-action="navigate" data-route="pending" data-focus-id="current-pending">去批准</button>' : ''}
       <button class="danger-button stop-button" type="button" data-action="open-stop" data-focus-id="open-stop" ${!device ? 'disabled' : ''}>停止任务</button>
       ${stopFeedback ? `<p class="feedback-line ${stopTask && isStopObserved(stopTask) ? 'status-success' : ''}">${escapeHtml(stopFeedback)}</p>` : ''}
