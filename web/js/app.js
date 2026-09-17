@@ -59,6 +59,7 @@ let pollTimer = null;
 let eventRefreshTimer = null;
 let authVerifyTimer = null;
 let toastTimer = null;
+let snapshotRequestSequence = 0;
 let sheetSequence = 0;
 let lastRenderedSheetId = null;
 let pendingFocusSelector = null;
@@ -78,9 +79,14 @@ const state = {
   browserConnection: 'idle',
   loading: Boolean(readStoredValue(TOKEN_STORAGE_KEY)),
   overview: null,
+  overviewStatus: readStoredValue(TOKEN_STORAGE_KEY) ? 'loading' : 'idle',
+  overviewError: '',
   tasks: restoreInFlightTasks(readStoredJson(IN_FLIGHT_STORAGE_KEY, [])),
   screenshots: [],
   pendingDevices: [],
+  pendingStatus: readStoredValue(TOKEN_STORAGE_KEY) ? 'loading' : 'idle',
+  pendingError: '',
+  approvalInProgress: new Set(),
   selectedDevice: readStoredValue(DEVICE_STORAGE_KEY),
   selectedScreenshotId: null,
   events: [],
@@ -170,6 +176,18 @@ function approvedDevices() {
 
 function selectedDeviceRecord() {
   return state.overview?.devices?.find((device) => device.device === state.selectedDevice) ?? null;
+}
+
+function pendingIsReady() {
+  return state.pendingStatus === 'ready';
+}
+
+function pendingApprovalKey(device, id) {
+  return device ? `device:${device}` : `id:${id}`;
+}
+
+function isPendingDeviceId(id) {
+  return typeof id === 'string' && /^[0-9a-f]{64}$/.test(id);
 }
 
 function reconcileSelectedDevice() {
@@ -264,9 +282,25 @@ function currentTaskForDevice(device) {
 }
 
 function currentTaskDisplay(device) {
-  if (!device) return { title: '请选择设备', note: '选择已批准设备后才能发送操作。' };
+  if (!device) {
+    if (state.auth === 'invalid') return { title: 'Token 无效', note: '请重新粘贴 dashboardToken 后再连接。' };
+    if (state.auth !== 'authorized' || state.overviewStatus !== 'ready') {
+      return state.overviewStatus === 'error'
+        ? { title: '设备状态暂不可用', note: state.overviewError || '请刷新后重试。' }
+        : { title: '正在加载设备状态', note: '连接成功后会显示已批准设备。' };
+    }
+    if (!pendingIsReady()) {
+      return state.pendingStatus === 'error'
+        ? { title: '待批准列表暂不可用', note: state.pendingError || '请刷新后重试。' }
+        : { title: '正在读取待批准设备', note: '请稍候，读取完成后再显示设备状态。' };
+    }
+    if (state.pendingDevices.length) return { title: '等待批准', note: '有设备在敲门，先去批准。' };
+    return (state.overview?.devices ?? []).length === 0
+      ? { title: '没有已登记设备', note: '可能是 maaUserToken 填错；请对照 config.json 检查。' }
+      : { title: '请选择设备', note: '选择已批准设备后才能发送操作。' };
+  }
   if (!device.approved) return { title: '等待设备批准', note: '批准后才可以发送远程命令。' };
-  if (!device.online) return { title: '设备离线', note: '设备在线状态由 MAA 轮询上报。' };
+  if (!device.online) return { title: '本机没在线', note: '请检查：睡眠 / 托盘服务 / Tunnel。' };
   if (!device.current_task_id) return { title: '当前空闲', note: '暂无 HeartBeat 观测到的顺序任务。' };
   const task = currentTaskForDevice(device);
   return {
@@ -363,7 +397,7 @@ function setToast(message, tone = 'default') {
 }
 
 function renderHeader() {
-  const pendingCount = state.pendingDevices.length;
+  const pendingCount = pendingIsReady() ? state.pendingDevices.length : 0;
   return `
     <header class="app-header">
       <div class="brand">
@@ -413,6 +447,7 @@ function renderDeviceCard() {
 function renderCurrentTask() {
   const device = selectedDeviceRecord();
   const current = currentTaskDisplay(device);
+  const pendingAttention = pendingIsReady() && state.pendingDevices.length > 0;
   const stopTask = state.tasks.find((task) => task.type === 'StopTask' && task.device === state.selectedDevice && task.status === 'success');
   const stopFeedback = stopTask
     ? (isStopObserved(stopTask) ? '已由心跳观测到设备空闲。' : '停止命令已回报，仍在等待心跳确认空闲。')
@@ -426,8 +461,10 @@ function renderCurrentTask() {
         </div>
         ${device ? `<span class="status-line ${deviceStatus(device).className}"><span class="status-dot" aria-hidden="true"></span>${deviceStatus(device).label}</span>` : ''}
       </div>
-      <div class="current-task-main">${escapeHtml(current.title)}</div>
-      <p class="task-note">${escapeHtml(current.note)}</p>
+      <div class="current-task-main">${pendingAttention ? '等待批准' : escapeHtml(current.title)}</div>
+      <p class="task-note">${pendingAttention ? '有设备在敲门，先去批准。' : escapeHtml(current.note)}</p>
+      ${pendingAttention && device ? `<p class="task-note">当前已选设备：${escapeHtml(current.title)}。${escapeHtml(current.note)}</p>` : ''}
+      ${pendingAttention ? '<button class="primary-button" type="button" data-action="navigate" data-route="pending" data-focus-id="current-pending">去批准</button>' : ''}
       <button class="danger-button stop-button" type="button" data-action="open-stop" data-focus-id="open-stop" ${!device ? 'disabled' : ''}>停止任务</button>
       ${stopFeedback ? `<p class="feedback-line ${stopTask && isStopObserved(stopTask) ? 'status-success' : ''}">${escapeHtml(stopFeedback)}</p>` : ''}
     </section>
@@ -552,9 +589,13 @@ function renderDashboard() {
   const authNotice = state.auth === 'required' || state.auth === 'invalid'
     ? `<div class="notice-banner notice-error"><span>${state.auth === 'invalid' ? 'Token 无效，连接已暂停。' : '设置 Token 后即可连接仪表盘。'}</span><button class="text-button" type="button" data-action="open-token" data-focus-id="token-notice">设置 Token</button></div>`
     : '';
+  const overviewNotice = state.overviewStatus === 'error'
+    ? `<div class="notice-banner notice-error"><span>设备状态暂时无法加载。${escapeHtml(state.overviewError || '请刷新后重试。')}</span><button class="text-button" type="button" data-action="refresh" data-focus-id="retry-overview">重试</button></div>`
+    : '';
   return `
     <main class="app-main">
       ${authNotice}
+      ${overviewNotice}
       <div class="dashboard-grid">
         <div class="dashboard-column">${renderDeviceCard()}${renderCurrentTask()}${renderQuickActions()}</div>
         <div class="dashboard-column">${renderTasks()}</div>
@@ -606,15 +647,35 @@ function renderMonitor() {
 }
 
 function renderPendingDevices() {
-  const rows = state.pendingDevices.map((device) => `
-    <li class="pending-item">
-      <div>
-        <div class="pending-device">${escapeHtml(device.device)}</div>
-        <div class="metadata">首次发现：${escapeHtml(formatDateTime(device.first_seen))}</div>
-      </div>
-      <button class="primary-button" type="button" data-action="approve-device" data-id="${attr(device.id)}" data-focus-id="approve-${attr(device.id)}">批准</button>
-    </li>
-  `).join('');
+  const rows = pendingIsReady() ? state.pendingDevices.map((device) => {
+    const id = typeof device?.id === 'string' ? device.id : '';
+    const deviceName = typeof device?.device === 'string' ? device.device : '';
+    const approvalKey = pendingApprovalKey(deviceName, id);
+    const busy = state.approvalInProgress.has(approvalKey) || state.approvalInProgress.has(`id:${id}`);
+    const valid = isPendingDeviceId(id);
+    return `
+      <li class="pending-item">
+        <div>
+          <div class="pending-device">${escapeHtml(deviceName || '未知设备')}</div>
+          <div class="metadata">首次发现：${escapeHtml(formatDateTime(device?.first_seen))}</div>
+        </div>
+        <button class="primary-button" type="button" data-action="approve-device" data-id="${attr(id)}" data-device="${attr(deviceName)}" data-focus-id="approve-${attr(id)}" ${!valid || busy ? 'disabled' : ''}>${busy ? '正在批准' : valid ? '批准' : '记录无效'}</button>
+      </li>
+    `;
+  }).join('') : '';
+  const content = state.auth === 'invalid'
+    ? `<div class="empty-state"><strong>Token 无效，无法读取待批准设备</strong><span>请重新设置 dashboardToken 后再试。</span><button class="secondary-button" type="button" data-action="open-token" data-focus-id="pending-token">设置 Token</button></div>`
+    : state.auth === 'required'
+      ? `<div class="empty-state"><strong>尚未连接仪表盘</strong><span>请先验证 dashboardToken。</span><button class="secondary-button" type="button" data-action="open-token" data-focus-id="pending-token">设置 Token</button></div>`
+      : state.auth === 'checking'
+        ? `<div class="empty-state"><strong>正在连接仪表盘</strong><span>请稍候，连接成功后会读取待批准设备。</span></div>`
+      : state.pendingStatus === 'error'
+    ? `<div class="empty-state"><strong>待批准设备暂时无法读取</strong><span>${escapeHtml(state.pendingError || '请刷新后重试。')}</span><button class="secondary-button" type="button" data-action="refresh" data-focus-id="retry-pending">重试</button></div>`
+    : state.pendingStatus !== 'ready'
+      ? `<div class="empty-state"><strong>正在读取待批准设备</strong><span>请稍候，读取成功后会显示设备记录。</span></div>`
+      : rows
+        ? `<ol class="pending-list">${rows}</ol>`
+        : `<div class="empty-state"><strong>没有待批准设备</strong><span>未知设备请求连接时会显示在这里。</span></div>`;
   return `
     <main class="app-main page-panel">
       <div class="page-heading">
@@ -625,7 +686,7 @@ function renderPendingDevices() {
         <button class="secondary-button" type="button" data-action="navigate" data-route="home" data-focus-id="back-from-pending">返回首页</button>
       </div>
       <section class="section-card">
-        ${rows ? `<ol class="pending-list">${rows}</ol>` : `<div class="empty-state"><strong>没有待批准设备</strong><span>未知设备请求连接时会显示在这里。</span></div>`}
+        ${content}
       </section>
     </main>
   `;
@@ -667,14 +728,14 @@ function renderThemeSheet() {
 function renderTokenSheet(sheet) {
   const inputType = state.tokenVisible ? 'text' : 'password';
   return `
-    <div class="sheet-heading"><div><h2 class="sheet-title">Token 设置</h2><p class="sheet-caption">连接你的仪表盘</p></div></div>
+    <div class="sheet-heading"><div><h2 class="sheet-title">Token 设置</h2><p class="sheet-caption">打开本机 server/config.json，复制 dashboardToken 粘贴到这里</p></div></div>
     <form data-form="token">
       <label class="field-label" for="token-input">访问 Token</label>
       <div class="token-input-wrap">
         <input id="token-input" class="text-input ${state.tokenError ? 'input-error' : ''}" name="token" data-field="token" data-focus-key="token-input" type="${inputType}" value="${attr(state.tokenDraft)}" autocomplete="current-password" spellcheck="false" required>
         <button class="input-toggle" type="button" data-action="toggle-token">${state.tokenVisible ? '隐藏' : '显示'}</button>
       </div>
-      <p class="sheet-note">仅在本机保存，勿分享给他人。</p>
+      <p class="sheet-note">不是 MAA 里的用户标识符。仅在本机保存，勿分享给他人。</p>
       ${state.tokenError ? `<p class="form-error"><span aria-hidden="true">!</span><span>${escapeHtml(state.tokenError)}</span></p>` : ''}
       <div class="sheet-actions">
         <button class="secondary-button" type="button" data-action="clear-token">清除</button>
@@ -963,9 +1024,14 @@ function invalidateSession() {
 
 function clearPrivateState() {
   state.overview = null;
+  state.overviewStatus = 'idle';
+  state.overviewError = '';
   state.tasks = [];
   state.screenshots = [];
   state.pendingDevices = [];
+  state.pendingStatus = 'idle';
+  state.pendingError = '';
+  state.approvalInProgress.clear();
   state.selectedDevice = '';
   state.selectedScreenshotId = null;
   state.events = [];
@@ -991,7 +1057,7 @@ function startPolling() {
   stopPolling();
   if (!state.token || state.auth === 'invalid') return;
   pollTimer = window.setInterval(() => {
-    refreshSnapshots().catch(() => {});
+    refreshSnapshots({ includePending: true }).catch(() => {});
   }, POLL_INTERVAL_MS);
 }
 
@@ -1026,9 +1092,13 @@ function handleApiError(error, { quiet = false } = {}) {
 }
 
 function applyOverview(payload) {
+  if (!payload || !Array.isArray(payload.devices)) return false;
   state.overview = payload;
-  mergeOverviewEvents(payload?.events ?? []);
+  mergeOverviewEvents(Array.isArray(payload.events) ? payload.events : []);
   reconcileSelectedDevice();
+  state.overviewStatus = 'ready';
+  state.overviewError = '';
+  return true;
 }
 
 function applyTasks(payload) {
@@ -1043,7 +1113,11 @@ function applyScreenshots(payload) {
 }
 
 function applyPending(payload) {
-  state.pendingDevices = payload?.devices ?? [];
+  if (!payload || !Array.isArray(payload.devices)) return false;
+  state.pendingDevices = payload.devices.filter((item) => item && typeof item === 'object');
+  state.pendingStatus = 'ready';
+  state.pendingError = '';
+  return true;
 }
 
 function scheduleStopVerifications() {
@@ -1097,6 +1171,15 @@ async function refreshScreenshots() {
 async function refreshSnapshots({ includePending = false, quiet = false } = {}) {
   if (!state.token || state.auth === 'invalid') return false;
   const epoch = sessionEpoch;
+  const requestSequence = ++snapshotRequestSequence;
+  if (!state.overview) {
+    state.overviewStatus = 'loading';
+    state.overviewError = '';
+  }
+  if (includePending) {
+    state.pendingStatus = 'loading';
+    state.pendingError = '';
+  }
   const options = { signal: sessionController.signal };
   const requests = [
     api.getOverview(options),
@@ -1105,7 +1188,7 @@ async function refreshSnapshots({ includePending = false, quiet = false } = {}) 
   ];
   if (includePending) requests.push(api.getPendingDevices(options));
   const results = await Promise.allSettled(requests);
-  if (epoch !== sessionEpoch) return false;
+  if (epoch !== sessionEpoch || requestSequence !== snapshotRequestSequence) return false;
   // 任一接口的 401 都先使整批快照失效，不能先渲染其他成功结果。
   const unauthorized = results.find((result) => result.status === 'rejected' && result.reason?.status === 401);
   if (unauthorized) {
@@ -1113,19 +1196,42 @@ async function refreshSnapshots({ includePending = false, quiet = false } = {}) 
     return false;
   }
   let authorized = true;
-  if (results[0].status === 'fulfilled') applyOverview(results[0].value);
-  else if (handleApiError(results[0].reason, { quiet }) === 'unauthorized') authorized = false;
-  if (results[1].status === 'fulfilled') applyTasks(results[1].value);
-  else if (handleApiError(results[1].reason, { quiet: true }) === 'unauthorized') authorized = false;
-  if (results[2].status === 'fulfilled') applyScreenshots(results[2].value);
-  else if (handleApiError(results[2].reason, { quiet: true }) === 'unauthorized') authorized = false;
-  if (includePending && results[3]?.status === 'fulfilled') applyPending(results[3].value);
-  else if (includePending && results[3]?.status === 'rejected') handleApiError(results[3].reason, { quiet: true });
+  let authenticatedResponse = false;
+  if (results[0].status === 'fulfilled') {
+    authenticatedResponse = true;
+    if (!applyOverview(results[0].value)) {
+      state.overviewStatus = 'error';
+      state.overviewError = '服务返回的设备状态无效，请刷新后重试。';
+    }
+  } else {
+    if (handleApiError(results[0].reason, { quiet }) === 'unauthorized') authorized = false;
+    state.overviewStatus = 'error';
+    state.overviewError = results[0].reason instanceof ApiClientError ? results[0].reason.message : mapApiError(results[0].reason);
+  }
+  if (results[1].status === 'fulfilled') {
+    authenticatedResponse = true;
+    applyTasks(results[1].value);
+  } else if (handleApiError(results[1].reason, { quiet: true }) === 'unauthorized') authorized = false;
+  if (results[2].status === 'fulfilled') {
+    authenticatedResponse = true;
+    applyScreenshots(results[2].value);
+  } else if (handleApiError(results[2].reason, { quiet: true }) === 'unauthorized') authorized = false;
+  if (includePending && results[3]?.status === 'fulfilled') {
+    authenticatedResponse = true;
+    if (!applyPending(results[3].value)) {
+      state.pendingStatus = 'error';
+      state.pendingError = '服务返回的待批准设备数据无效，请刷新后重试。';
+    }
+  } else if (includePending && results[3]?.status === 'rejected') {
+    handleApiError(results[3].reason, { quiet: true });
+    state.pendingStatus = 'error';
+    state.pendingError = results[3].reason instanceof ApiClientError ? results[3].reason.message : mapApiError(results[3].reason);
+  }
   if (!authorized) return false;
-  state.auth = 'authorized';
+  if (authenticatedResponse) state.auth = 'authorized';
   state.loading = false;
   render();
-  return true;
+  return authenticatedResponse || state.auth === 'authorized';
 }
 
 function scheduleEventRefresh() {
@@ -1325,19 +1431,68 @@ function clearToken() {
   render();
 }
 
-async function approveDevice(id) {
+async function approveDevice(id, deviceName = '') {
+  const requestedId = typeof id === 'string' ? id : String(id ?? '');
+  const requestedDevice = typeof deviceName === 'string' ? deviceName : '';
+  if (!isPendingDeviceId(requestedId)) {
+    setToast('待批准设备记录无效，请刷新列表。', 'error');
+    render();
+    return;
+  }
+  const lockKey = pendingApprovalKey(requestedDevice, requestedId);
+  if (state.approvalInProgress.has(lockKey)) return;
+  state.approvalInProgress.add(lockKey);
+  render();
+
   const epoch = sessionEpoch;
-  const device = state.pendingDevices.find((item) => item.id === id);
-  if (!device) return;
+  const client = api;
+  const signal = sessionController.signal;
+  let pendingLoaded = false;
   try {
-    const result = await api.approveDevice(id, { signal: sessionController.signal });
+    // pending 记录可能在按钮绘制后变化；以这次 GET 返回的记录 id 为准。
+    const pending = await client.getPendingDevices({ signal });
+    if (epoch !== sessionEpoch) return;
+    if (!applyPending(pending)) {
+      state.pendingStatus = 'error';
+      state.pendingError = '服务返回的待批准设备数据无效，请刷新后重试。';
+      setToast(state.pendingError, 'error');
+      return;
+    }
+    pendingLoaded = true;
+    const device = state.pendingDevices.find((item) => requestedDevice
+      ? item.device === requestedDevice
+      : String(item.id) === requestedId);
+    if (!device) {
+      setToast('该设备已不在待批准列表，请刷新后重试。', 'error');
+      return;
+    }
+    const targetId = typeof device.id === 'string' ? device.id : '';
+    if (!isPendingDeviceId(targetId)) {
+      setToast('待批准设备记录无效，请刷新列表。', 'error');
+      return;
+    }
+    const result = await client.approveDevice(targetId, { signal });
     if (epoch !== sessionEpoch) return;
     setToast(result.already_approved ? '该设备此前已批准。' : '设备已批准。', 'success');
     await refreshSnapshots({ includePending: true, quiet: false });
   } catch (error) {
     if (epoch !== sessionEpoch) return;
-    handleApiError(error);
+    if (!pendingLoaded) {
+      state.pendingStatus = 'error';
+      state.pendingError = error instanceof ApiClientError ? error.message : mapApiError(error);
+    }
+    if (error instanceof ApiClientError && error.status === 404) {
+      setToast('该设备已不在待批准列表，请刷新后重试。', 'error');
+      refreshSnapshots({ includePending: true, quiet: true }).catch(() => {});
+    } else {
+      handleApiError(error);
+    }
     render();
+  } finally {
+    if (epoch === sessionEpoch) {
+      state.approvalInProgress.delete(lockKey);
+      render();
+    }
   }
 }
 
@@ -1537,7 +1692,7 @@ async function handleAction(target) {
     return;
   }
   if (action === 'approve-device') {
-    await approveDevice(target.dataset.id);
+    await approveDevice(target.dataset.id, target.dataset.device);
     return;
   }
   if (action === 'refresh') {

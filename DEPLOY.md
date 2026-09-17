@@ -1,6 +1,6 @@
 # MAARemote 部署指南（DEPLOY）
 
-> **⚠️ 域名占位说明**：本文全文使用占位域名 **`maa.example.com`**。你确定监控子域名后（如 `maa.你的域名.com`），请把文中所有 `maa.example.com` **全局替换**为真实域名，`deploy\cloudflared-config.yml` 同理。其余命令（路径、端口、脚本名）与仓库现状一致，可直接照做。
+> **占位符说明**：本文使用示例域名 **`maa.example.com`**。执行前请替换为你的域名，`deploy\cloudflared-config.yml` 同理；`<REPO_ROOT>`、`<NSSM_DIR>` 分别替换为仓库和 NSSM 的本机路径，`<TUNNEL_ID>` 替换为你创建的隧道 UUID。
 
 ## 0. 架构一览
 
@@ -21,10 +21,10 @@
 | Node.js | ≥18 | `node --version`；未装：`winget install OpenJS.NodeJS.LTS` |
 | PowerShell | 7（pwsh） | `pwsh --version`；未装：`winget install Microsoft.PowerShell` |
 | cloudflared | 最新版 | `cloudflared --version`；未装：`winget install Cloudflare.cloudflared`（装完重开终端生效） |
-| 域名 | NS 已托管 Cloudflare | 你的域名已完成（现状满足） |
+| 域名 | NS 已托管 Cloudflare | 确认你的域名已完成 NS 托管 |
 | MAA 桌面端 | 已能正常连模拟器跑任务 | 与本服务零耦合，先后无所谓 |
 
-以下命令均在 **pwsh 7** 中执行，工作目录假设为仓库根目录 `E:\AI-Workspace\MAARemote`（若你把仓库放到别处，替换对应路径）。
+以下命令均在 **pwsh 7** 中执行，工作目录假设为仓库根目录 `<REPO_ROOT>`（请替换为你本机的仓库路径）。
 
 ## 2. 启动服务端
 
@@ -113,15 +113,15 @@ cloudflared service install
 **重要（Windows 特有坑）**：服务以 **LocalSystem** 身份运行，cloudflared 会改读
 
 ```
-C:\Windows\System32\config\systemprofile\.cloudflared\config.yml
+%SystemRoot%\System32\config\systemprofile\.cloudflared\config.yml
 ```
 
 因此需把 `config.yml` **和凭据 json** 一并复制过去（管理员 pwsh）：
 
 ```powershell
 New-Item -ItemType Directory -Force -Path "$env:SystemRoot\System32\config\systemprofile\.cloudflared" | Out-Null
-Copy-Item $HOME\.cloudflared\config.yml                                $env:SystemRoot\System32\config\systemprofile\.cloudflared\
-Copy-Item $HOME\.cloudflared\<TUNNEL_ID>.json                          $env:SystemRoot\System32\config\systemprofile\.cloudflared\
+Copy-Item -LiteralPath "$HOME\.cloudflared\config.yml" -Destination "$env:SystemRoot\System32\config\systemprofile\.cloudflared\"
+Copy-Item -LiteralPath "$HOME\.cloudflared\<TUNNEL_ID>.json" -Destination "$env:SystemRoot\System32\config\systemprofile\.cloudflared\"
 if ((Get-Service cloudflared).Status -ne 'Running') { Start-Service cloudflared }
 ```
 
@@ -181,14 +181,14 @@ pwsh -NoProfile -File tray.ps1 -Action autostart-off
 
 托盘方案要求一个**已登录的用户会话**（Run 键随登录触发）。若需要**不登录也常驻**（如重启后无人值守自动上线），改用 NSSM 把服务端注册为 Windows 服务：
 
-1. 下载 NSSM：<https://nssm.cc/release/nssm-2.24.zip>，解压后取 `win64\nssm.exe` 放到一个**仓库外**的固定目录（如 `C:\Tools\nssm\`，避免二进制混入仓库），并在 PATH 中或用完整路径调用。
+1. 下载 NSSM：<https://nssm.cc/release/nssm-2.24.zip>，解压后取 `win64\nssm.exe` 放到一个**仓库外**的固定目录（如 `<NSSM_DIR>`，避免二进制混入仓库），并在 PATH 中或用完整路径调用。
 2. 管理员 pwsh 注册（`$node = (Get-Command node).Source` 先查 node 实际路径）：
 
    ```powershell
    nssm install MAARemote "$node" "src\index.js"
-   nssm set MAARemote AppDirectory "E:\AI-Workspace\MAARemote\server"
-   nssm set MAARemote AppStdout     "E:\AI-Workspace\MAARemote\logs\service-out.log"
-   nssm set MAARemote AppStderr     "E:\AI-Workspace\MAARemote\logs\service-err.log"
+   nssm set MAARemote AppDirectory "<REPO_ROOT>\server"
+   nssm set MAARemote AppStdout     "<REPO_ROOT>\logs\service-out.log"
+   nssm set MAARemote AppStderr     "<REPO_ROOT>\logs\service-err.log"
    nssm set MAARemote AppStdoutCreationDisposition 4   # 追加写
    nssm set MAARemote AppStderrCreationDisposition 4
    nssm start MAARemote

@@ -2,6 +2,8 @@
 
 > 本文只使用示例地址和占位符。真实 token、域名、Tunnel UUID、凭据路径和设备标识符只应保存在本机，绝不要提交到 Git 或粘贴到公开渠道。
 
+前端代码采用 **AGPL-3.0-or-later**；后端代码采用 **MPL-2.0**。公网部署时请自行保管 `dashboardToken` 与 `maaUserToken`，不要把真实 token 提交到仓库。`server/config.json` 已列入 `.gitignore`，只应保留在本机。
+
 为 Windows 上的 [MAA 桌面端](https://github.com/MaaAssistantArknights/MaaAssistantArknights)（明日方舟助手）实现官方**远程控制协议**的服务端：监控任务进度、实时截图，并支持远程下发指令。前端仪表盘（移动端优先，任意现代浏览器访问）由本人另行设计实现，对接本项目提供的 API。
 
 ## 架构
