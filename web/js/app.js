@@ -10,7 +10,8 @@ import {
   parseEventDetail,
   reconcilePendingConfirmationTasks,
   restoreInFlightTasks,
-} from './model.js';
+} from './model.js?v=20260922-inflight2';
+import { renderQuickActionWrapHtml, renderStuckClearButtonHtml } from './action-ui.js?v=20260922-inflight2';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
 import {
   captureSheetContext,
@@ -255,8 +256,7 @@ function renderStuckClearButton(type, { id } = {}) {
     ? state.tasks.find((item) => item.id === id)
     : taskForAction(type);
   if (!isPendingConfirmationTask(task)) return '';
-  const idAttr = id ? ` data-id="${attr(id)}"` : '';
-  return `<button class="text-button" type="button" data-action="clear-pending" data-type="${attr(type)}"${idAttr} data-focus-id="clear-pending-${attr(id || type)}">清除卡住状态</button>`;
+  return renderStuckClearButtonHtml(type, { id, attr });
 }
 
 function renderActionFeedbackLine(type, extraClass = '') {
@@ -542,21 +542,15 @@ function renderQuickActions() {
     const sending = isActionSending(action.type);
     const pending = isPendingConfirmationTask(task);
     const inFlight = Boolean(task);
-    const classNames = ['quick-action'];
-    if (!sending && inFlight && isLongRunningCommandType(action.type) && !pending) classNames.push('is-running');
-    if (pending) classNames.push('is-pending');
-    const feedback = actionFeedback(action.type);
-    const stateText = feedback || action.detail;
-    const ariaLabel = feedback ? `${action.label}，${feedback}` : action.label;
-    return `
-      <div class="quick-action-wrap">
-        <button class="${classNames.join(' ')}" type="button" data-action="run-quick" data-type="${attr(action.type)}" data-focus-id="quick-${attr(action.type)}" aria-label="${attr(ariaLabel)}" ${isActionDisabled(action.type) ? 'disabled' : ''}>
-          <span class="quick-action-title">${escapeHtml(action.label)}</span>
-          <span class="quick-action-state">${escapeHtml(stateText)}</span>
-        </button>
-        ${pending ? renderStuckClearButton(action.type) : ''}
-      </div>
-    `;
+    return renderQuickActionWrapHtml({
+      action,
+      feedback: actionFeedback(action.type),
+      pending,
+      disabled: isActionDisabled(action.type),
+      running: !sending && inFlight && isLongRunningCommandType(action.type) && !pending,
+      attr,
+      escapeHtml,
+    });
   }).join('');
   return `
     <section class="section-card" aria-labelledby="quick-heading">

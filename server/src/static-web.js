@@ -68,7 +68,9 @@ export default async function staticWeb(fastify, options) {
   });
 
   async function sendIndex(reply) {
-    const index = await readStaticFile(webRoot, indexPath);
+    // 必须传相对路径：readStaticFile 会剥掉绝对路径的前导 / 再 resolve，
+    // 传入 path.join(webRoot, 'index.html') 会拼出 webRoot/webRoot/index.html 而 404。
+    const index = await readStaticFile(webRoot, 'index.html');
     if (!index) return reply.code(404).send();
     return reply
       .header('X-Content-Type-Options', 'nosniff')

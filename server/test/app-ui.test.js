@@ -14,7 +14,26 @@ test('快捷操作在途保持可点，并提供进行中确认与清除卡住�
   assert.match(source, /kind: 'inflight'/);
   assert.match(source, /isActionDisabled\(action\.type\)/);
   assert.doesNotMatch(source, /isActionBusy\(action\.type\) \? 'disabled'/);
-  assert.match(source, /renderStuckClearButton/);
+  assert.match(source, /renderStuckClearButtonHtml/);
+  assert.match(source, /renderQuickActionWrapHtml/);
+});
+
+test('幽灵 pending 的快捷操作 HTML 含清除卡住状态且不 disabled', async () => {
+  const { renderQuickActionWrapHtml } = await import('../../web/js/action-ui.js');
+  const html = renderQuickActionWrapHtml({
+    action: { type: 'LinkStart-AutoRoguelike', label: '自动肉鸽', detail: '执行已保存的肉鸽流程' },
+    feedback: '结果待确认',
+    pending: true,
+    disabled: false,
+    running: false,
+    attr: (value) => String(value ?? ''),
+    escapeHtml: (value) => String(value ?? ''),
+  });
+  assert.match(html, /data-action="clear-pending"/);
+  assert.match(html, /清除卡住状态/);
+  assert.match(html, /结果待确认/);
+  assert.match(html, /is-pending/);
+  assert.doesNotMatch(html, /\sdisabled/);
 });
 
 test('stale 回收 SQL 覆盖 dispatched 与 running', async () => {
