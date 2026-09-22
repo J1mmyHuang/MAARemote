@@ -51,15 +51,103 @@ test('mergeTaskSnapshots 以真实任务 id 合并且允许 queued 直接跳转 
 
 test('restoreInFlightTasks 保留在途任务并将 POST 结果丢失标记为待确认', async (t) => {
   const { restoreInFlightTasks } = await loadModel(t);
+  const now = 1_000_000;
   const saved = [
     { id: 'queued-1', type: 'LinkStart', status: 'queued', device: 'emulator-a' },
-    { id: 'unknown-1', type: 'LinkStart-Combat', status: 'pending_confirmation', device: 'emulator-a' },
+    { id: 'unknown-1', type: 'LinkStart-Combat', status: 'pending_confirmation', device: 'emulator-a', created_at: now - 1000 },
     { id: 'done-1', type: 'LinkStart', status: 'success', device: 'emulator-a' },
   ];
 
-  const restored = restoreInFlightTasks(saved);
+  const restored = restoreInFlightTasks(saved, now);
   assert.deepEqual(restored.map((task) => task.id), ['queued-1', 'unknown-1']);
   assert.equal(restored.find((task) => task.id === 'unknown-1').pendingConfirmation, true);
+});
+
+test('restoreInFlightTasks 丢弃超龄或缺少创建时间的幽灵 pending_confirmation', async (t) => {
+  const { restoreInFlightTasks, PENDING_CONFIRMATION_MAX_AGE_MS } = await loadModel(t);
+  const now = 10_000_000;
+  const restored = restoreInFlightTasks([
+    { id: 'pending:old', type: 'LinkStart', status: 'pending_confirmation', device: 'emulator-a', created_at: now - PENDING_CONFIRMATION_MAX_AGE_MS - 1 },
+    { id: 'pending:no-ts', type: 'LinkStart', status: 'pending_confirmation', device: 'emulator-a' },
+    { id: 'queued-1', type: 'LinkStart', status: 'queued', device: 'emulator-a' },
+  ], now);
+
+  assert.deepEqual(restored.map((task) => task.id), ['queued-1']);
+});
+
+test('reconcilePendingConfirmationTasks 能用服务端同类型在途或邻近任务清掉幽灵 pending', async (t) => {
+  const { reconcilePendingConfirmationTasks } = await loadModel(t);
+  const now = 5_000_000;
+  const ghost = {
+    id: 'pending:1:LinkStart:emulator-a',
+    type: 'LinkStart',
+    device: 'emulator-a',
+    status: 'pending_confirmation',
+    created_at: now - 20_000,
+    pendingConfirmation: true,
+  };
+  const otherGhost = {
+    id: 'pending:2:LinkStart:emulator-b',
+    type: 'LinkStart',
+    device: 'emulator-b',
+    status: 'pending_confirmation',
+    created_at: now - 10_000,
+    pendingConfirmation: true,
+  };
+
+  const againstRunning = reconcilePendingConfirmationTasks(
+    [ghost, otherGhost],
+    [{ id: 'real-1', type: 'LinkStart', device: 'emulator-a', status: 'running', created_at: now - 15_000 }],
+    now,
+  );
+  assert.deepEqual(againstRunning.map((task) => task.id), ['pending:2:LinkStart:emulator-b']);
+
+  const againstFinishedNearby = reconcilePendingConfirmationTasks(
+    [ghost],
+    [{ id: 'real-2', type: 'LinkStart', device: 'emulator-a', status: 'success', created_at: now - 18_000 }],
+    now,
+  );
+  assert.equal(againstFinishedNearby.length, 0);
+
+  const againstUnrelatedOldSuccess = reconcilePendingConfirmationTasks(
+    [ghost],
+    [{ id: 'old-success', type: 'LinkStart', device: 'emulator-a', status: 'success', created_at: now - 3_600_000 }],
+    now,
+  );
+  assert.equal(againstUnrelatedOldSuccess.length, 1);
+
+  const againstAlreadyMergedRunning = reconcilePendingConfirmationTasks(
+    [
+      ghost,
+      { id: 'real-merged', type: 'LinkStart', device: 'emulator-a', status: 'queued', created_at: now - 5_000 },
+    ],
+    [],
+    now,
+  );
+  assert.deepEqual(againstAlreadyMergedRunning.map((task) => task.id), ['real-merged']);
+});
+
+test('clearPendingConfirmationTasks 只清除指定的幽灵 pending', async (t) => {
+  const { clearPendingConfirmationTasks } = await loadModel(t);
+  const tasks = [
+    { id: 'pending:1', type: 'LinkStart', device: 'emulator-a', status: 'pending_confirmation' },
+    { id: 'real-1', type: 'LinkStart', device: 'emulator-a', status: 'running' },
+    { id: 'pending:2', type: 'LinkStart-AutoRoguelike', device: 'emulator-a', status: 'pending_confirmation' },
+  ];
+
+  const cleared = clearPendingConfirmationTasks(tasks, { type: 'LinkStart', device: 'emulator-a' });
+  assert.deepEqual(cleared.map((task) => task.id), ['real-1', 'pending:2']);
+});
+
+test('长 LinkStart 进行中不禁用控件，截图等短操作仍锁定', async (t) => {
+  const { isLongRunningCommandType, isActionControlDisabled } = await loadModel(t);
+
+  assert.equal(isLongRunningCommandType('LinkStart'), true);
+  assert.equal(isLongRunningCommandType('LinkStart-AutoRoguelike'), true);
+  assert.equal(isLongRunningCommandType('CaptureImageNow'), false);
+  assert.equal(isActionControlDisabled({ type: 'LinkStart', inFlight: true }), false);
+  assert.equal(isActionControlDisabled({ type: 'LinkStart', sending: true, inFlight: true }), true);
+  assert.equal(isActionControlDisabled({ type: 'CaptureImageNow', inFlight: true }), true);
 });
 
 test('isStopTaskStopped 仅在 StopTask success 且 overview 观测为空闲时返回 true', async (t) => {

@@ -132,7 +132,7 @@ remotePort = 24325
 | `dashboardToken` | 随机生成 | 仪表盘 API 鉴权令牌 |
 | `heartbeatIntervalSec` | `30` | HeartBeat 注入间隔 |
 | `screenshotIntervalSec` | `300` | 截图采集间隔 |
-| `staleMinutes` | `10` | dispatched 无回报判定超时 |
+| `staleMinutes` | `10` | dispatched / running 超过该时间无终结回报则判定超时 |
 | `screenshotKeepCount` | `50` | 截图保留张数 |
 | `offlineAfterSec` | `5` | 无轮询判定离线阈值 |
 
