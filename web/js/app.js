@@ -1,9 +1,14 @@
 import { ApiClient, ApiClientError, mapApiError } from './api.js?v=20260913-security1';
 import {
+  clearPendingConfirmationTasks,
+  isActionControlDisabled,
+  isLongRunningCommandType,
+  isPendingConfirmationTask,
   isStopTaskStopped,
   mergeEvents,
   mergeTaskSnapshots,
   parseEventDetail,
+  reconcilePendingConfirmationTasks,
   restoreInFlightTasks,
 } from './model.js';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
@@ -217,13 +222,58 @@ function taskForAction(type, device = state.selectedDevice) {
 }
 
 function actionFeedback(type, device = state.selectedDevice) {
-  if (state.actionInProgress.has(actionKey(type, device))) return '正在发送';
+  if (isActionSending(type, device)) return '正在发送';
   const task = taskForAction(type, device);
-  return task ? taskStatusLabel(task.status) : '';
+  if (!task) return '';
+  if (isPendingConfirmationTask(task)) return '结果待确认';
+  if (isLongRunningCommandType(type)) return '进行中';
+  return taskStatusLabel(task.status);
+}
+
+function isActionSending(type, device = state.selectedDevice) {
+  return state.actionInProgress.has(actionKey(type, device));
 }
 
 function isActionBusy(type, device = state.selectedDevice) {
-  return state.actionInProgress.has(actionKey(type, device)) || Boolean(taskForAction(type, device));
+  return isActionSending(type, device) || Boolean(taskForAction(type, device));
+}
+
+function isActionDisabled(type, device = state.selectedDevice) {
+  return isActionControlDisabled({
+    type,
+    sending: isActionSending(type, device),
+    inFlight: Boolean(taskForAction(type, device)),
+  });
+}
+
+function shouldOpenInFlightConfirm(type, device = state.selectedDevice) {
+  return isLongRunningCommandType(type) && Boolean(taskForAction(type, device)) && !isActionSending(type, device);
+}
+
+function renderStuckClearButton(type, { id } = {}) {
+  const task = id
+    ? state.tasks.find((item) => item.id === id)
+    : taskForAction(type);
+  if (!isPendingConfirmationTask(task)) return '';
+  const idAttr = id ? ` data-id="${attr(id)}"` : '';
+  return `<button class="text-button" type="button" data-action="clear-pending" data-type="${attr(type)}"${idAttr} data-focus-id="clear-pending-${attr(id || type)}">清除卡住状态</button>`;
+}
+
+function renderActionFeedbackLine(type, extraClass = '') {
+  const feedback = actionFeedback(type);
+  if (!feedback) return '';
+  const pending = isPendingConfirmationTask(taskForAction(type));
+  const className = `feedback-line${extraClass ? ` ${extraClass}` : ''}${pending ? ' feedback-pending' : ''}`;
+  return `<p class="${className}"><span>${escapeHtml(feedback)}</span>${pending ? renderStuckClearButton(type) : ''}</p>`;
+}
+
+function clearStuckPending(type, { id, device = state.selectedDevice } = {}) {
+  const before = state.tasks.length;
+  state.tasks = clearPendingConfirmationTasks(state.tasks, id ? { id } : { type, device });
+  if (state.tasks.length === before) return;
+  saveInFlightTasks();
+  setToast('已清除卡住状态。', 'success');
+  render();
 }
 
 function saveInFlightTasks() {
@@ -236,7 +286,11 @@ function mergeOverviewEvents(events = []) {
 }
 
 function mergeTasks(tasks = []) {
-  state.tasks = mergeTaskSnapshots(state.tasks, tasks);
+  state.tasks = reconcilePendingConfirmationTasks(
+    mergeTaskSnapshots(state.tasks, tasks),
+    tasks,
+    Date.now(),
+  );
   saveInFlightTasks();
   scheduleStopVerifications();
 }
@@ -477,19 +531,31 @@ function renderCurrentTask() {
       ${pendingAttention && device ? `<p class="task-note">当前已选设备：${escapeHtml(current.title)}。${formatNoteHtml(current.note)}</p>` : ''}
       ${pendingAttention ? '<button class="primary-button" type="button" data-action="navigate" data-route="pending" data-focus-id="current-pending">去批准</button>' : ''}
       <button class="danger-button stop-button" type="button" data-action="open-stop" data-focus-id="open-stop" ${!device ? 'disabled' : ''}>停止任务</button>
-      ${stopFeedback ? `<p class="feedback-line ${stopTask && isStopObserved(stopTask) ? 'status-success' : ''}">${escapeHtml(stopFeedback)}</p>` : ''}
+      ${stopFeedback ? `<p class="feedback-line ${stopTask && isStopObserved(stopTask) ? 'status-success' : ''}${isPendingConfirmationTask(taskForAction('StopTask')) ? ' feedback-pending' : ''}"><span>${escapeHtml(stopFeedback)}</span>${renderStuckClearButton('StopTask')}</p>` : ''}
     </section>
   `;
 }
 
 function renderQuickActions() {
   const buttons = QUICK_ACTIONS.map((action) => {
+    const task = taskForAction(action.type);
+    const sending = isActionSending(action.type);
+    const pending = isPendingConfirmationTask(task);
+    const inFlight = Boolean(task);
+    const classNames = ['quick-action'];
+    if (!sending && inFlight && isLongRunningCommandType(action.type) && !pending) classNames.push('is-running');
+    if (pending) classNames.push('is-pending');
     const feedback = actionFeedback(action.type);
+    const stateText = feedback || action.detail;
+    const ariaLabel = feedback ? `${action.label}，${feedback}` : action.label;
     return `
-      <button class="quick-action" type="button" data-action="run-quick" data-type="${attr(action.type)}" data-focus-id="quick-${attr(action.type)}" ${isActionBusy(action.type) ? 'disabled' : ''}>
-        <span class="quick-action-title">${escapeHtml(action.label)}</span>
-        <span class="quick-action-state">${escapeHtml(feedback || action.detail)}</span>
-      </button>
+      <div class="quick-action-wrap">
+        <button class="${classNames.join(' ')}" type="button" data-action="run-quick" data-type="${attr(action.type)}" data-focus-id="quick-${attr(action.type)}" aria-label="${attr(ariaLabel)}" ${isActionDisabled(action.type) ? 'disabled' : ''}>
+          <span class="quick-action-title">${escapeHtml(action.label)}</span>
+          <span class="quick-action-state">${escapeHtml(stateText)}</span>
+        </button>
+        ${pending ? renderStuckClearButton(action.type) : ''}
+      </div>
     `;
   }).join('');
   return `
@@ -550,7 +616,8 @@ function renderScreenshotPreview(compact = false) {
       <div class="screenshot-preview">${primary}</div>
       ${thumbs ? `<div class="thumb-row">${thumbs}</div>` : ''}
       <div class="button-row" style="margin-top: 12px;">
-        <button class="primary-button" type="button" data-action="capture-image" data-focus-id="capture-image" ${isActionBusy('CaptureImageNow') ? 'disabled' : ''}>${escapeHtml(actionFeedback('CaptureImageNow') || '立即截图')}</button>
+        <button class="primary-button" type="button" data-action="capture-image" data-focus-id="capture-image" ${isActionDisabled('CaptureImageNow') ? 'disabled' : ''}>${escapeHtml(actionFeedback('CaptureImageNow') || '立即截图')}</button>
+        ${renderStuckClearButton('CaptureImageNow')}
       </div>
     </section>
   `;
@@ -623,6 +690,7 @@ function renderTaskHistory() {
       <div>
         <div class="history-title">${escapeHtml(taskLabel(task.type))}</div>
         <div class="history-meta">${escapeHtml(taskStatusLabel(task.status))} · ${escapeHtml(formatDateTime(task.created_at))}</div>
+        ${isPendingConfirmationTask(task) ? renderStuckClearButton(task.type, { id: task.id }) : ''}
       </div>
     </li>
   `).join('');
@@ -705,17 +773,16 @@ function renderPendingDevices() {
 
 function renderTaskSheet(sheet) {
   const task = sheet.task;
-  const feedback = actionFeedback(task.type);
   return `
     <div class="sheet-heading"><div><h2 class="sheet-title">${escapeHtml(task.label)}</h2><p class="sheet-caption">单项任务</p></div></div>
     <p class="sheet-copy">使用电脑端 MAA 已保存的参数。</p>
     <p class="sheet-note">单独执行该任务，不改变电脑端的勾选状态。其他任务进行中时会排队等待。</p>
     <p class="sheet-note">结果回报仅表示远程任务已结束，可查看截图确认游戏结果。</p>
     ${task.type === 'LinkStart-Combat' ? `<button class="secondary-button" type="button" data-action="open-setting" data-setting="Settings-Stage1" data-focus-id="open-stage-from-task">修改作战关卡</button>` : ''}
-    ${feedback ? `<p class="feedback-line">${escapeHtml(feedback)}</p>` : ''}
+    ${renderActionFeedbackLine(task.type)}
     <div class="sheet-actions">
       <button class="secondary-button" type="button" data-action="close-sheet">返回</button>
-      <button class="primary-button" type="button" data-action="submit-task" data-type="${attr(task.type)}" ${isActionBusy(task.type) ? 'disabled' : ''}>${escapeHtml(feedback || '单独执行该任务')}</button>
+      <button class="primary-button" type="button" data-action="submit-task" data-type="${attr(task.type)}" ${isActionDisabled(task.type) ? 'disabled' : ''}>${escapeHtml(isActionSending(task.type) ? '正在发送' : '单独执行该任务')}</button>
     </div>
   `;
 }
@@ -818,17 +885,34 @@ function renderConfirmSheet(sheet) {
       : gacha
         ? '请确认游戏内资源与目标设备无误。'
         : '其他任务进行中时会排队等待。';
-  const feedback = actionFeedback(type);
   return `
     <div class="sheet-heading"><div><h2 class="sheet-title">${title}</h2><p class="sheet-caption">此操作不会自动撤销</p></div></div>
     <p class="sheet-copy">${escapeHtml(detail)}</p>
     <p class="sheet-warning">${escapeHtml(warning)}</p>
     <p class="sheet-note">关闭面板不会撤销已发送的指令。</p>
-    ${feedback ? `<p class="feedback-line">${escapeHtml(feedback)}</p>` : ''}
+    ${renderActionFeedbackLine(type)}
     <div class="sheet-actions">
       <button class="secondary-button" type="button" data-action="back-sheet">取消</button>
-      <button class="danger-button" type="button" data-action="confirm-task" data-type="${attr(type)}" ${isActionBusy(type) ? 'disabled' : ''}>${escapeHtml(feedback || actionLabel)}</button>
+      <button class="danger-button" type="button" data-action="confirm-task" data-type="${attr(type)}" ${isActionDisabled(type) ? 'disabled' : ''}>${escapeHtml(isActionSending(type) ? '正在发送' : actionLabel)}</button>
     </div>
+  `;
+}
+
+function renderInFlightSheet(sheet) {
+  const type = sheet.type;
+  const label = taskLabel(type);
+  const sending = isActionSending(type);
+  const pending = isPendingConfirmationTask(taskForAction(type));
+  return `
+    <div class="sheet-heading"><div><h2 class="sheet-title">任务进行中</h2><p class="sheet-caption">可以选择再排队或先停止</p></div></div>
+    <p class="sheet-copy">${escapeHtml(label)}仍在进行。再下一单会排队等待；先 Stop 将尝试停止当前远程任务。</p>
+    <p class="sheet-note">停止命令回报后仍需等待心跳确认空闲；队列中后续任务可能继续执行。</p>
+    ${pending ? `<p class="feedback-line feedback-pending"><span>结果待确认</span>${renderStuckClearButton(type)}</p>` : ''}
+    <div class="sheet-actions">
+      <button class="secondary-button" type="button" data-action="queue-again" data-type="${attr(type)}" ${sending ? 'disabled' : ''}>再下一单</button>
+      <button class="danger-button" type="button" data-action="stop-current" ${isActionDisabled('StopTask') ? 'disabled' : ''}>先 Stop</button>
+    </div>
+    <div class="sheet-actions single"><button class="secondary-button" type="button" data-action="close-sheet">取消</button></div>
   `;
 }
 
@@ -843,6 +927,7 @@ function renderSheet() {
   if (sheet.kind === 'setting') content = renderSettingInputSheet(sheet);
   if (sheet.kind === 'gacha') content = renderGachaSheet(sheet);
   if (sheet.kind === 'confirm') content = renderConfirmSheet(sheet);
+  if (sheet.kind === 'inflight') content = renderInFlightSheet(sheet);
   return `
     <div class="sheet-layer" data-sheet-layer>
       <button class="sheet-dismiss-area" type="button" data-action="dismiss-sheet" aria-label="关闭面板"></button>
@@ -1337,21 +1422,21 @@ function pendingTask(type, device) {
   };
 }
 
-async function sendTask(type, { params, confirm = false } = {}) {
+async function sendTask(type, { params, confirm = false, force = false } = {}) {
   const epoch = sessionEpoch;
   const definition = taskDefinition(type);
   if (!state.token || state.auth !== 'authorized') {
     state.tokenError = state.auth === 'invalid' ? 'Token 无效，请重新粘贴后验证。' : '';
     openSheet({ kind: 'token', title: 'Token 设置', submitting: false });
-    return;
+    return false;
   }
   const device = state.selectedDevice;
   if (!device) {
     setToast('请选择要操作的已批准设备。', 'error');
     render();
-    return;
+    return false;
   }
-  if (isActionBusy(type, device)) return;
+  if (isActionSending(type, device) || (!force && isActionBusy(type, device))) return false;
   const key = actionKey(type, device);
   state.actionInProgress.add(key);
   render();
@@ -1360,18 +1445,20 @@ async function sendTask(type, { params, confirm = false } = {}) {
   if (confirm) body.confirm = true;
   try {
     const response = await api.sendTask(body, { signal: sessionController.signal });
-    if (epoch !== sessionEpoch) return;
+    if (epoch !== sessionEpoch) return false;
     mergeTasks([response]);
     setToast(`${definition.label}已排队。`, 'success');
     scheduleEventRefresh();
+    return true;
   } catch (error) {
-    if (epoch !== sessionEpoch) return;
+    if (epoch !== sessionEpoch) return false;
     if (error instanceof ApiClientError && ['timeout', 'network'].includes(error.kind)) {
       mergeTasks([pendingTask(type, device)]);
       setToast('请求结果待确认，请查看任务记录；不会自动重发。', 'error');
     } else {
       handleApiError(error);
     }
+    return false;
   } finally {
     if (epoch === sessionEpoch) {
       state.actionInProgress.delete(key);
@@ -1662,7 +1749,26 @@ async function handleAction(target) {
     return;
   }
   if (action === 'run-quick' || action === 'submit-task') {
-    await sendTask(target.dataset.type);
+    const type = target.dataset.type;
+    if (shouldOpenInFlightConfirm(type)) {
+      openSheet({ kind: 'inflight', title: '任务进行中', type }, target);
+      return;
+    }
+    await sendTask(type);
+    return;
+  }
+  if (action === 'queue-again') {
+    const ok = await sendTask(target.dataset.type, { force: true });
+    if (ok) closeSheet();
+    return;
+  }
+  if (action === 'stop-current') {
+    const ok = await sendTask('StopTask', { confirm: true });
+    if (ok) closeSheet();
+    return;
+  }
+  if (action === 'clear-pending') {
+    clearStuckPending(target.dataset.type, { id: target.dataset.id });
     return;
   }
   if (action === 'open-task') {

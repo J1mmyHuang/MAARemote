@@ -1,5 +1,5 @@
 // backdate-task.js —— 自测辅助（M2 验收 stale 回收用）：把指定任务的 dispatched_at 改为 N 分钟前，
-// 使其落入 stale 回收器的扫描范围（dispatched 超 staleMinutes 无回报 → stale，不再下发）。
+// 使其落入 stale 回收器的扫描范围（dispatched / running 超 staleMinutes 无终结回报 → stale，不再下发）。
 // 用法：node tools/backdate-task.js <task_id> [minutes]
 //   <task_id>  任务 id（insert-task.js 输出的 id；也可从 /api/tasks 或库里查）
 //   [minutes]  回拨分钟数，默认 11（大于 staleMinutes 默认值 10 即可触发）
@@ -28,10 +28,10 @@ if (!row) {
   db.close();
   process.exit(1);
 }
-if (row.status !== 'dispatched') {
+if (row.status !== 'dispatched' && row.status !== 'running') {
   console.error(
-    `[警告] 任务 ${taskId} 当前 status=${row.status}（非 dispatched）；已仍按请求回拨 dispatched_at，` +
-      `但 stale 回收器只扫描 status='dispatched' 的行`
+    `[警告] 任务 ${taskId} 当前 status=${row.status}（非 dispatched/running）；已仍按请求回拨 dispatched_at，` +
+      `但 stale 回收器只扫描 status IN ('dispatched','running') 的行`
   );
 }
 

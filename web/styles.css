@@ -415,6 +415,18 @@ a:focus-visible {
   gap: 10px;
 }
 
+.quick-action-wrap {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.quick-action-wrap .text-button {
+  justify-self: start;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
 .quick-action,
 .primary-button,
 .secondary-button,
@@ -439,6 +451,19 @@ a:focus-visible {
 .task-tile:hover {
   border-color: var(--accent);
   background: var(--accent-bg);
+}
+
+.quick-action.is-running {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.quick-action.is-running .quick-action-state {
+  color: var(--accent);
+}
+
+.quick-action.is-pending .quick-action-state {
+  color: var(--amber);
 }
 
 .quick-action-title {
@@ -537,6 +562,18 @@ a:focus-visible {
 
 .feedback-line.status-success {
   color: var(--green);
+}
+
+.feedback-line.feedback-pending {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.feedback-line.feedback-pending .text-button {
+  min-height: 32px;
+  padding: 4px 8px;
 }
 
 .screenshot-preview {

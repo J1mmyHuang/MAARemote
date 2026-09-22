@@ -3,10 +3,13 @@
 // 1. 离线检测器（每 2s）：遍历 approved 设备，按 now - last_seen >= offlineAfterSec*1000 判离线。
 //    仅在「在线 ↔ 离线」状态转换时写一条事件（offline / online），内存 Map 缓存上次判定结果，
 //    不会每周期重复写；服务启动时以库内当前数据建立基线，重启不产生转换事件（防刷屏）。
-// 2. stale 回收器（每 5s）：扫描 status='dispatched' 且 dispatched_at 超过 staleMinutes 的任务，
-//    置为 stale（getTask 的下发查询只取 queued/dispatched/running，天然不再返回 stale）。
-//    UPDATE 带 status='dispatched' 条件保证不覆盖已终结任务。事件纪律：HeartBeat 任务完全不写
-//    任何事件（含 task_stale），其余类型照旧写 task_stale。
+// 2. stale 回收器（每 5s）：扫描 status IN ('dispatched','running') 且锚点时间超过 staleMinutes
+//    的任务，置为 stale（getTask 的下发查询只取 queued/dispatched/running，天然不再返回 stale）。
+//    锚点优先 dispatched_at；HeartBeat 可能把 queued 直接推成 running，此时回落到 created_at。
+//    UPDATE 带 status IN ('dispatched','running') 保证不覆盖已终结任务。事件纪律：HeartBeat
+//    任务完全不写任何事件（含 task_stale），其余类型照旧写 task_stale。
+//    覆盖 running 是必要的：长 LinkStart* 常被心跳对上 id 后转入 running，若只扫 dispatched
+//    会永不超时，仪表盘会把该指令当成永久在途。
 // 3. 心跳注入器（M3，扫描每 1s、按 heartbeatIntervalSec 间隔触发）：对 approved=1 且在线
 //    （与离线检测器同口径）的设备插入 type='HeartBeat' 的 queued 任务（立即类，MAA 取到即回，
 //    payload 由 MAA 回报当前顺序任务 id）。防堆积护栏：同设备存在未终结（queued/dispatched/running）
@@ -33,8 +36,9 @@ const PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // 静态 SQL + 参数绑定，禁止拼接
 const SQL_APPROVED_DEVICES = 'SELECT id, device, last_seen FROM devices WHERE approved = 1';
 const SQL_STALE_CANDIDATES =
-  "SELECT id, type, device_id FROM tasks WHERE status = 'dispatched' AND dispatched_at IS NOT NULL AND dispatched_at < ?";
-const SQL_MARK_STALE = "UPDATE tasks SET status = 'stale' WHERE id = ? AND status = 'dispatched'";
+  "SELECT id, type, device_id FROM tasks WHERE status IN ('dispatched', 'running') AND COALESCE(dispatched_at, created_at) IS NOT NULL AND COALESCE(dispatched_at, created_at) < ?";
+const SQL_MARK_STALE =
+  "UPDATE tasks SET status = 'stale' WHERE id = ? AND status IN ('dispatched', 'running')";
 const SQL_HAS_UNFINISHED_BY_TYPE =
   "SELECT COUNT(*) AS n FROM tasks WHERE device_id = ? AND type = ? AND status IN ('queued', 'dispatched', 'running')";
 const SQL_INSERT_QUEUED_TASK =
@@ -42,6 +46,34 @@ const SQL_INSERT_QUEUED_TASK =
 // [低4] 超龄 pending 设备清理（仅 approved=0；last_seen 必非空——登记时即写入）
 const SQL_DELETE_EXPIRED_PENDING =
   'DELETE FROM devices WHERE approved = 0 AND last_seen IS NOT NULL AND last_seen < ?';
+
+/**
+ * 扫描并回收超时的 dispatched / running 任务。抽出独立函数便于单测，不走 setInterval。
+ * opts: { db, staleMinutes, recordEvent, now? }
+ * 返回本次真正置 stale 的行数。
+ */
+export function recycleStaleTasks(opts) {
+  const { db, staleMinutes, recordEvent, now = Date.now() } = opts;
+  const cutoff = now - staleMinutes * 60000;
+  const rows = db.prepare(SQL_STALE_CANDIDATES).all(cutoff);
+  let recycled = 0;
+  for (const row of rows) {
+    const info = db.prepare(SQL_MARK_STALE).run(row.id);
+    // changes()>0 才是本次真正置 stale 的行（防与 reportStatus 终结竞态重复记事件）；
+    // HeartBeat 完全不写事件（事件纪律），其余类型照旧广播 task_stale
+    if (info.changes > 0) {
+      recycled += 1;
+      if (row.type !== 'HeartBeat') {
+        recordEvent({
+          deviceId: row.device_id,
+          kind: 'task_stale',
+          detail: { task_id: row.id, type: row.type },
+        });
+      }
+    }
+  }
+  return recycled;
+}
 
 /**
  * 启动全部后台协程。opts: { config, db, bus, log, recordEvent }
@@ -94,20 +126,7 @@ export function startSchedulers(opts) {
   };
 
   const staleSweep = () => {
-    const cutoff = Date.now() - config.staleMinutes * 60000;
-    const rows = db.prepare(SQL_STALE_CANDIDATES).all(cutoff);
-    for (const row of rows) {
-      const info = db.prepare(SQL_MARK_STALE).run(row.id);
-      // changes()>0 才是本次真正置 stale 的行（防与 reportStatus 终结竞态重复记事件）；
-      // HeartBeat 完全不写事件（事件纪律），其余类型照旧广播 task_stale
-      if (info.changes > 0 && row.type !== 'HeartBeat') {
-        recordEvent({
-          deviceId: row.device_id,
-          kind: 'task_stale',
-          detail: { task_id: row.id, type: row.type },
-        });
-      }
-    }
+    recycleStaleTasks({ db, staleMinutes: config.staleMinutes, recordEvent });
   };
 
   /**
