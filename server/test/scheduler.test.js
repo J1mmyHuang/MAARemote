@@ -29,6 +29,13 @@ test('recycleStaleTasks 回收超时的 dispatched 与 running，但不动未超
   insertTask(db, { id: 'old-running', status: 'running', createdAt: oldTs, dispatchedAt: oldTs });
   insertTask(db, { id: 'running-no-dispatch', status: 'running', createdAt: oldTs, dispatchedAt: null });
   insertTask(db, { id: 'fresh-running', status: 'running', createdAt: freshTs, dispatchedAt: freshTs });
+  insertTask(db, {
+    id: 'observed-roguelike',
+    type: 'LinkStart-AutoRoguelike',
+    status: 'running',
+    createdAt: oldTs,
+    dispatchedAt: freshTs,
+  });
   insertTask(db, { id: 'queued-old', status: 'queued', createdAt: oldTs, dispatchedAt: null });
   insertTask(db, { id: 'already-success', status: 'success', createdAt: oldTs, dispatchedAt: oldTs });
   insertTask(db, { id: 'heartbeat-running', type: 'HeartBeat', status: 'running', createdAt: oldTs, dispatchedAt: oldTs });
@@ -46,6 +53,7 @@ test('recycleStaleTasks 回收超时的 dispatched 与 running，但不动未超
   assert.equal(statusOf('old-running'), 'stale');
   assert.equal(statusOf('running-no-dispatch'), 'stale');
   assert.equal(statusOf('fresh-running'), 'running');
+  assert.equal(statusOf('observed-roguelike'), 'running');
   assert.equal(statusOf('queued-old'), 'queued');
   assert.equal(statusOf('already-success'), 'success');
   assert.equal(statusOf('heartbeat-running'), 'stale');

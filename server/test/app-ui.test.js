@@ -9,13 +9,14 @@ const schedulerSource = () => fs.readFile(fileURLToPath(new URL('../src/schedule
 test('快捷操作在途保持可点，并提供进行中确认与清除卡住状态', async () => {
   const source = await appSource();
   assert.match(source, /清除卡住状态/);
-  assert.match(source, /再下一单/);
-  assert.match(source, /先 Stop/);
   assert.match(source, /kind: 'inflight'/);
   assert.match(source, /isActionDisabled\(action\.type\)/);
   assert.doesNotMatch(source, /isActionBusy\(action\.type\) \? 'disabled'/);
   assert.match(source, /renderStuckClearButtonHtml/);
   assert.match(source, /renderQuickActionWrapHtml/);
+  assert.match(source, /renderInFlightSheetHtml/);
+  assert.match(source, /canQueueAgainWhileInFlight/);
+  assert.match(source, /shouldOfferInFlightConfirm/);
 });
 
 test('幽灵 pending 的快捷操作 HTML 含清除卡住状态且不 disabled', async () => {
@@ -36,9 +37,70 @@ test('幽灵 pending 的快捷操作 HTML 含清除卡住状态且不 disabled',
   assert.doesNotMatch(html, /\sdisabled/);
 });
 
-test('stale 回收 SQL 覆盖 dispatched 与 running', async () => {
+test('同类型在途或心跳占用时进行中面板禁用再下一单并要求先 Stop', async () => {
+  const { renderInFlightSheetHtml } = await import('../../web/js/action-ui.js');
+  const escapeHtml = (value) => String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+  const observed = renderInFlightSheetHtml({
+    type: 'LinkStart-AutoRoguelike',
+    label: '自动肉鸽',
+    pending: false,
+    sending: false,
+    queueAgainEnabled: false,
+    stopDisabled: false,
+    observedCurrent: true,
+    realInFlight: true,
+    attr: escapeHtml,
+    escapeHtml,
+  });
+  assert.match(observed, /请先停止当前远程任务/);
+  assert.match(observed, /请先 Stop，不要再下一单/);
+  assert.match(observed, /data-action="queue-again"[^>]*\sdisabled/);
+  assert.match(observed, /data-action="stop-current"/);
+  assert.doesNotMatch(observed, /data-action="stop-current"[^>]*\sdisabled/);
+  assert.doesNotMatch(observed, /再下一单会排队等待/);
+
+  const inFlightIdleHeartbeat = renderInFlightSheetHtml({
+    type: 'LinkStart',
+    label: '一键除草',
+    pending: false,
+    sending: false,
+    queueAgainEnabled: false,
+    stopDisabled: false,
+    observedCurrent: false,
+    realInFlight: true,
+    attr: escapeHtml,
+    escapeHtml,
+  });
+  assert.match(inFlightIdleHeartbeat, /请先 Stop 或等待结束/);
+  assert.match(inFlightIdleHeartbeat, /请先 Stop，或等当前任务结束，不要再下一单/);
+  assert.match(inFlightIdleHeartbeat, /data-action="queue-again"[^>]*\sdisabled/);
+  assert.doesNotMatch(inFlightIdleHeartbeat, /再下一单会排队等待/);
+
+  const xss = renderInFlightSheetHtml({
+    type: 'LinkStart"><img>',
+    label: '<b>除草</b>',
+    pending: true,
+    sending: false,
+    queueAgainEnabled: true,
+    stopDisabled: false,
+    observedCurrent: false,
+    realInFlight: false,
+    attr: escapeHtml,
+    escapeHtml,
+  });
+  assert.match(xss, /&lt;b&gt;除草&lt;\/b&gt;/);
+  assert.match(xss, /data-type="LinkStart&quot;&gt;&lt;img&gt;"/);
+  assert.doesNotMatch(xss, /<b>除草<\/b>/);
+});
+
+test('stale 回收 SQL 覆盖 dispatched 与 running，并说明心跳刷新锚点', async () => {
   const source = await schedulerSource();
   assert.match(source, /status IN \('dispatched', 'running'\)/);
   assert.match(source, /export function recycleStaleTasks/);
   assert.match(source, /COALESCE\(dispatched_at, created_at\)/);
+  assert.match(source, /刷新 dispatched_at/);
 });

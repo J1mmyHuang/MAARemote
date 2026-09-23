@@ -6,8 +6,10 @@
 // 2. stale 回收器（每 5s）：扫描 status IN ('dispatched','running') 且锚点时间超过 staleMinutes
 //    的任务，置为 stale（getTask 的下发查询只取 queued/dispatched/running，天然不再返回 stale）。
 //    锚点优先 dispatched_at；HeartBeat 可能把 queued 直接推成 running，此时回落到 created_at。
-//    UPDATE 带 status IN ('dispatched','running') 保证不覆盖已终结任务。事件纪律：HeartBeat
-//    任务完全不写任何事件（含 task_stale），其余类型照旧写 task_stale。
+//    HeartBeat 每次观测到该顺序任务会刷新 dispatched_at（见 routes/maa.js），因此真在跑的
+//    自动肉鸽不会仅因首次下发超过 10 分钟被误标；失联超过 staleMinutes 仍会回收，避免
+//    MAA 重启后重复执行旧 ID。UPDATE 带 status IN ('dispatched','running') 保证不覆盖已终结
+//    任务。事件纪律：HeartBeat 任务完全不写任何事件（含 task_stale），其余类型照旧写 task_stale。
 //    覆盖 running 是必要的：长 LinkStart* 常被心跳对上 id 后转入 running，若只扫 dispatched
 //    会永不超时，仪表盘会把该指令当成永久在途。
 // 3. 心跳注入器（M3，扫描每 1s、按 heartbeatIntervalSec 间隔触发）：对 approved=1 且在线

@@ -17,6 +17,7 @@ test('mapApiError 将鉴权、限流、设备和截图错误映射为中文反�
   assert.equal(mapApiError({ status: 404, error: 'device_not_found' }), '未找到该设备，请重新选择设备');
   assert.equal(mapApiError({ status: 400, error: 'device_not_approved' }), '该设备尚未批准，请先在设备管理中批准');
   assert.equal(mapApiError({ status: 404, error: 'screenshot_not_found' }), '截图不存在或已被清理');
+  assert.equal(mapApiError({ status: 400, error: 'already_in_flight' }), '同类任务尚未结束，请先 Stop 或等待完成');
   assert.equal(mapApiError({ status: 404, error: 'screenshot_file_missing' }), '截图文件已丢失，请重新截图');
 });
 
