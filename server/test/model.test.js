@@ -171,7 +171,23 @@ test('长任务白名单仅覆盖一键除草与自动肉鸽，短 LinkStart-* �
     inFlight: false,
     device: { current_task_id: '' },
   }), false);
+  assert.equal(canQueueAgainWhileInFlight({
+    device: { current_task_id: '' },
+    task: { status: 'running' },
+  }), false);
+  assert.equal(canQueueAgainWhileInFlight({
+    device: { current_task_id: '' },
+    task: { status: 'queued' },
+  }), false);
+  assert.equal(canQueueAgainWhileInFlight({
+    device: { current_task_id: '' },
+    task: { status: 'dispatched' },
+  }), false);
   assert.equal(canQueueAgainWhileInFlight({ device: { current_task_id: 'job-1' } }), false);
+  assert.equal(canQueueAgainWhileInFlight({
+    device: { current_task_id: '' },
+    task: { status: 'pending_confirmation' },
+  }), true);
   assert.equal(canQueueAgainWhileInFlight({ device: { current_task_id: '' } }), true);
   assert.equal(canQueueAgainWhileInFlight({ sending: true, device: { current_task_id: '' } }), false);
 });

@@ -80,6 +80,11 @@ export function hasObservedCurrentTask(device) {
   return typeof device?.current_task_id === 'string' && device.current_task_id.length > 0;
 }
 
+/** 服务端真实在途：queued / dispatched / running。不含本地幽灵 pending_confirmation。 */
+export function isUnfinishedServerTask(task) {
+  return IN_FLIGHT_STATUSES.has(task?.status);
+}
+
 /**
  * 长任务在途，或心跳仍观测到占用时，打开进行中确认，避免直接再入队。
  * 公招 / 基建等短流程不会走到这里（控件保持 disabled）。
@@ -89,10 +94,15 @@ export function shouldOfferInFlightConfirm({ type, sending = false, inFlight = f
   return Boolean(inFlight) || hasObservedCurrentTask(device);
 }
 
-/** 心跳仍观测到占用时不允许「再下一单」，需先 Stop。 */
-export function canQueueAgainWhileInFlight({ sending = false, device } = {}) {
+/**
+ * 同类型仍在 queued/dispatched/running，或心跳仍占用时，不允许「再下一单」。
+ * 仅幽灵 pending_confirmation（结果待确认）且心跳空闲时允许再发一次。
+ */
+export function canQueueAgainWhileInFlight({ sending = false, device, task } = {}) {
   if (sending) return false;
-  return !hasObservedCurrentTask(device);
+  if (hasObservedCurrentTask(device)) return false;
+  if (isUnfinishedServerTask(task)) return false;
+  return true;
 }
 
 function sameActionTarget(left, right) {

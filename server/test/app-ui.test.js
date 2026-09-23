@@ -37,7 +37,7 @@ test('幽灵 pending 的快捷操作 HTML 含清除卡住状态且不 disabled',
   assert.doesNotMatch(html, /\sdisabled/);
 });
 
-test('心跳仍占用时进行中面板禁用再下一单并要求先 Stop', async () => {
+test('同类型在途或心跳占用时进行中面板禁用再下一单并要求先 Stop', async () => {
   const { renderInFlightSheetHtml } = await import('../../web/js/action-ui.js');
   const escapeHtml = (value) => String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -52,6 +52,7 @@ test('心跳仍占用时进行中面板禁用再下一单并要求先 Stop', asy
     queueAgainEnabled: false,
     stopDisabled: false,
     observedCurrent: true,
+    realInFlight: true,
     attr: escapeHtml,
     escapeHtml,
   });
@@ -60,29 +61,34 @@ test('心跳仍占用时进行中面板禁用再下一单并要求先 Stop', asy
   assert.match(observed, /data-action="queue-again"[^>]*\sdisabled/);
   assert.match(observed, /data-action="stop-current"/);
   assert.doesNotMatch(observed, /data-action="stop-current"[^>]*\sdisabled/);
+  assert.doesNotMatch(observed, /再下一单会排队等待/);
 
-  const idle = renderInFlightSheetHtml({
+  const inFlightIdleHeartbeat = renderInFlightSheetHtml({
     type: 'LinkStart',
     label: '一键除草',
     pending: false,
     sending: false,
-    queueAgainEnabled: true,
+    queueAgainEnabled: false,
     stopDisabled: false,
     observedCurrent: false,
+    realInFlight: true,
     attr: escapeHtml,
     escapeHtml,
   });
-  assert.match(idle, /再下一单会排队等待/);
-  assert.doesNotMatch(idle, /data-action="queue-again"[^>]*\sdisabled/);
+  assert.match(inFlightIdleHeartbeat, /请先 Stop 或等待结束/);
+  assert.match(inFlightIdleHeartbeat, /请先 Stop，或等当前任务结束，不要再下一单/);
+  assert.match(inFlightIdleHeartbeat, /data-action="queue-again"[^>]*\sdisabled/);
+  assert.doesNotMatch(inFlightIdleHeartbeat, /再下一单会排队等待/);
 
   const xss = renderInFlightSheetHtml({
     type: 'LinkStart"><img>',
     label: '<b>除草</b>',
-    pending: false,
+    pending: true,
     sending: false,
     queueAgainEnabled: true,
     stopDisabled: false,
     observedCurrent: false,
+    realInFlight: false,
     attr: escapeHtml,
     escapeHtml,
   });

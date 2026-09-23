@@ -39,14 +39,22 @@ export function renderInFlightSheetHtml({
   queueAgainEnabled,
   stopDisabled,
   observedCurrent,
+  realInFlight,
   attr,
   escapeHtml,
   stuckClearButtonHtml = '',
 }) {
-  const caption = observedCurrent ? '请先停止当前远程任务' : '可以选择再排队或先停止';
+  const stopFirst = observedCurrent || realInFlight || !queueAgainEnabled;
+  const caption = observedCurrent
+    ? '请先停止当前远程任务'
+    : stopFirst
+      ? '请先 Stop 或等待结束'
+      : '上次结果待确认';
   const copy = observedCurrent
     ? `${label}仍在进行，心跳还观测到设备占用。请先 Stop，不要再下一单。`
-    : `${label}仍在进行。再下一单会排队等待；先 Stop 将尝试停止当前远程任务。`;
+    : stopFirst
+      ? `${label}仍在进行。请先 Stop，或等当前任务结束，不要再下一单。`
+      : `${label}上次结果待确认。确认尚未入队后可以再下一单；已在途则请先 Stop。`;
   const queueDisabled = sending || !queueAgainEnabled;
   return `
     <div class="sheet-heading"><div><h2 class="sheet-title">任务进行中</h2><p class="sheet-caption">${escapeHtml(caption)}</p></div></div>

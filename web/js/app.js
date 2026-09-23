@@ -1,19 +1,21 @@
-import { ApiClient, ApiClientError, mapApiError } from './api.js?v=20260923-followup1';
+import { ApiClient, ApiClientError, mapApiError } from './api.js?v=20260923-followup2';
 import {
   canQueueAgainWhileInFlight,
   clearPendingConfirmationTasks,
+  hasObservedCurrentTask,
   isActionControlDisabled,
   isLongRunningCommandType,
   isPendingConfirmationTask,
   isStopTaskStopped,
+  isUnfinishedServerTask,
   mergeEvents,
   mergeTaskSnapshots,
   parseEventDetail,
   reconcilePendingConfirmationTasks,
   restoreInFlightTasks,
   shouldOfferInFlightConfirm,
-} from './model.js?v=20260923-followup1';
-import { renderInFlightSheetHtml, renderQuickActionWrapHtml, renderStuckClearButtonHtml } from './action-ui.js?v=20260923-followup1';
+} from './model.js?v=20260923-followup2';
+import { renderInFlightSheetHtml, renderQuickActionWrapHtml, renderStuckClearButtonHtml } from './action-ui.js?v=20260923-followup2';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
 import {
   captureSheetContext,
@@ -262,6 +264,7 @@ function canQueueAgain(type, device = state.selectedDevice) {
   return canQueueAgainWhileInFlight({
     sending: isActionSending(type, device),
     device: (state.overview?.devices ?? []).find((item) => item.device === device),
+    task: taskForAction(type, device),
   });
 }
 
@@ -908,7 +911,8 @@ function renderConfirmSheet(sheet) {
 
 function renderInFlightSheet(sheet) {
   const type = sheet.type;
-  const pending = isPendingConfirmationTask(taskForAction(type));
+  const task = taskForAction(type);
+  const pending = isPendingConfirmationTask(task);
   return renderInFlightSheetHtml({
     type,
     label: taskLabel(type),
@@ -916,7 +920,8 @@ function renderInFlightSheet(sheet) {
     sending: isActionSending(type),
     queueAgainEnabled: canQueueAgain(type),
     stopDisabled: isActionDisabled('StopTask'),
-    observedCurrent: !canQueueAgainWhileInFlight({ device: selectedDeviceRecord() }),
+    observedCurrent: hasObservedCurrentTask(selectedDeviceRecord()),
+    realInFlight: isUnfinishedServerTask(task),
     attr,
     escapeHtml,
     stuckClearButtonHtml: pending ? renderStuckClearButton(type) : '',
