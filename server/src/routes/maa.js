@@ -64,8 +64,10 @@ const SQL_FINISH_TASK =
 const SQL_INSERT_SCREENSHOT =
   'INSERT INTO screenshots (device_id, task_id, path, size, created_at) VALUES (?, ?, ?, ?, ?)';
 const SQL_SET_CURRENT_TASK = 'UPDATE devices SET current_task_id = ? WHERE id = ?';
+// HeartBeat 观测到该顺序任务时转入 running，并刷新 dispatched_at 作为 stale 计时锚点。
+// 覆盖已是 running 的行：长任务（自动肉鸽）会持续被心跳确认，不能一直用首次下发时间判断超时。
 const SQL_MARK_TASK_RUNNING =
-  "UPDATE tasks SET status = 'running' WHERE id = ? AND device_id = ? AND status IN ('queued', 'dispatched')";
+  "UPDATE tasks SET status = 'running', dispatched_at = ? WHERE id = ? AND device_id = ? AND status IN ('queued', 'dispatched', 'running')";
 const SQL_SCREENSHOTS_EXCESS =
   'SELECT id, path FROM screenshots WHERE device_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?';
 const SQL_DELETE_SCREENSHOT_BY_ID = 'DELETE FROM screenshots WHERE id = ?';
@@ -265,8 +267,8 @@ export default async function maaRoutes(fastify, opts) {
     // payload = MAA 当前正在执行的顺序任务 id（空串 = 空闲）。
     // 1) 空串 → current_task_id 置 NULL（overview 中表现为 null）；
     // 2) 非空 → 照常记录到 current_task_id（即使本地任务表对不上，如 MAA 重启后的旧 id，不猜状态）；
-    // 3) 恰好对上本设备未终结（queued/dispatched）任务 → 置 running（running 状态的唯一来源；
-    //    对不上绝不动任务状态）。
+    // 3) 恰好对上本设备未终结（queued/dispatched/running）任务 → 置 running 并刷新
+    //    dispatched_at（running 状态的唯一来源；对不上绝不动任务状态）。
     // 事件纪律：HeartBeat 完全不写任何事件（含 task_finished）。
     if (taskRow.type === 'HeartBeat') {
       const observed = typeof payload === 'string' ? payload : '';
@@ -275,8 +277,9 @@ export default async function maaRoutes(fastify, opts) {
       }
       db.prepare(SQL_SET_CURRENT_TASK).run(observed.length > 0 ? observed : null, deviceId);
       if (observed.length > 0) {
-        // running 的唯一来源：仅当 payload 对上本设备 queued/dispatched 的任务才转换
-        db.prepare(SQL_MARK_TASK_RUNNING).run(observed, taskRow.device_id);
+        // running 的唯一来源：仅当 payload 对上本设备未终结任务才转换 / 刷新锚点；
+        // 对不上（含已终结或他设备任务）绝不动任务状态。
+        db.prepare(SQL_MARK_TASK_RUNNING).run(now, observed, taskRow.device_id);
       }
       // [低3] 终结 UPDATE 带状态条件（仅 queued/dispatched/running 可转换）
       db.prepare(SQL_FINISH_TASK).run(finalStatus, now, null, taskRow.id);

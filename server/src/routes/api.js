@@ -36,15 +36,19 @@ const SQL_SCREENSHOTS_RECENT =
 const SQL_SCREENSHOT_BY_ID = 'SELECT id, device_id, task_id, path, size, created_at FROM screenshots WHERE id = ?';
 // ---- M4：指令下发与设备批准 ----
 // 按设备名查设备（指令下发的目标解析；本项目单 user，设备名唯一）
-const SQL_DEVICE_BY_NAME = 'SELECT id, device, approved FROM devices WHERE device = ?';
+const SQL_DEVICE_BY_NAME = 'SELECT id, device, approved, current_task_id FROM devices WHERE device = ?';
 // 已登记设备总数（device 缺省时的「唯一设备默认」判定）
 const SQL_DEVICE_COUNT = 'SELECT COUNT(*) AS n FROM devices';
 // 取唯一已登记设备（排序口径与 overview 一致：first_seen 正序）
-const SQL_FIRST_DEVICE = 'SELECT id, device, approved FROM devices ORDER BY first_seen ASC, rowid ASC LIMIT 1';
+const SQL_FIRST_DEVICE = 'SELECT id, device, approved, current_task_id FROM devices ORDER BY first_seen ASC, rowid ASC LIMIT 1';
 // 指令任务入库（与 insert-task.js / scheduler.js 同款 INSERT：queued + uuid，
 // 走既有 getTask 通道下发、共用既有状态机，不新增表）
 const SQL_INSERT_COMMAND_TASK =
   "INSERT INTO tasks (id, device_id, type, params, status, created_at) VALUES (?, ?, ?, ?, 'queued', ?)";
+// 与 scheduler 注入器同口径：同设备同类型未终结则不能再入队用户 LinkStart*
+const SQL_HAS_UNFINISHED_BY_TYPE =
+  "SELECT COUNT(*) AS n FROM tasks WHERE device_id = ? AND type = ? AND status IN ('queued', 'dispatched', 'running')";
+const SQL_TASK_BY_ID_FOR_DEVICE = 'SELECT id, type, status FROM tasks WHERE id = ? AND device_id = ?';
 // 待批准设备列表（仅 approved=0，首次登记时间正序）
 const SQL_PENDING_DEVICES =
   'SELECT id, device, first_seen, last_seen FROM devices WHERE approved = 0 ORDER BY first_seen ASC, rowid ASC';
@@ -84,6 +88,21 @@ const COMMAND_TYPES = new Set([
 const SETTINGS_TYPES = new Set(['Settings-ConnectAddress', 'Settings-Stage1']);
 // 需二次确认的类型：请求体必须 confirm === true（安全防线，前端据此弹窗）
 const CONFIRM_REQUIRED_TYPES = new Set(['StopTask', 'Settings-ConnectAddress', 'Settings-Stage1']);
+
+function isLinkStartCommandType(type) {
+  return type === 'LinkStart' || (typeof type === 'string' && type.startsWith('LinkStart-'));
+}
+
+/** 用户下发的 LinkStart*：同设备同类型未终结，或心跳仍观测到同类型占用，则拒绝叠单。 */
+function linkStartBlocked(db, devRow, type) {
+  if (!isLinkStartCommandType(type)) return false;
+  const { n } = db.prepare(SQL_HAS_UNFINISHED_BY_TYPE).get(devRow.id, type);
+  if (n > 0) return true;
+  const currentId = devRow.current_task_id;
+  if (typeof currentId !== 'string' || currentId.length === 0) return false;
+  const current = db.prepare(SQL_TASK_BY_ID_FOR_DEVICE).get(currentId, devRow.id);
+  return !current || current.type === type;
+}
 
 /** 仪表盘 API 路由插件。opts: { config, db, bus } */
 export default async function apiRoutes(fastify, opts) {
@@ -143,9 +162,11 @@ export default async function apiRoutes(fastify, opts) {
   });
 
   // 指令下发（M4）：body {type, params?, device?, confirm?}。
-  // 校验顺序：type 白名单 → params → confirm 二次确认 → 目标设备解析。
-  // 入库与 insert-task.js / scheduler.js 同款（queued + uuid），走既有 getTask 通道与状态机；
-  // 手动指令不经过注入器的「同设备同类型未终结跳过」护栏（那道护栏只在 scheduler 侧）。
+  // 校验顺序：type 白名单 → params → confirm 二次确认 → 目标设备解析 → LinkStart* 同类型互斥。
+  // 入库与 insert-task.js / scheduler.js 同款（queued + uuid），走既有 getTask 通道与状态机。
+  // LinkStart / LinkStart-* 与注入器同口径：同设备同类型未终结则拒绝（already_in_flight）；
+  // 心跳 current_task_id 仍指向同类型（含已标 stale 的旧任务）也拒绝，避免误标超时后叠单。
+  // StopTask / 立即类 / Settings 不受此护栏。
   fastify.post('/tasks', async (request, reply) => {
     const body = request.body ?? {};
     const { type, params, device, confirm } = body;
@@ -199,7 +220,12 @@ export default async function apiRoutes(fastify, opts) {
       return reply.code(400).send({ error: 'device_not_approved' });
     }
 
-    // 5) 入库：status='queued'，立即对 getTask 可见（幂等可重入由协议层保证）
+    // 5) LinkStart* 同类型互斥（StopTask 等不受限）
+    if (linkStartBlocked(db, devRow, type)) {
+      return reply.code(400).send({ error: 'already_in_flight' });
+    }
+
+    // 6) 入库：status='queued'，立即对 getTask 可见（幂等可重入由协议层保证）
     const id = crypto.randomUUID();
     const now = Date.now();
     db.prepare(SQL_INSERT_COMMAND_TASK).run(id, devRow.id, type, paramsText, now);

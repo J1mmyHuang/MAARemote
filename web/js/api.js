@@ -28,6 +28,7 @@ export function mapApiError(error = {}) {
   if (code === 'params_required') return '请填写所需参数';
   if (code === 'invalid_params') return '参数格式无效';
   if (code === 'invalid_type') return '不支持此操作';
+  if (code === 'already_in_flight') return '同类任务尚未结束，请先 Stop 或等待完成';
   if (code === 'bad_limit' || code === 'bad_id') return '请求参数无效';
   return '请求失败，请稍后再试';
 }

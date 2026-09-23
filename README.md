@@ -117,7 +117,7 @@ remotePort = 24325
 | GET | `/api/overview` | 设备在线状态 + 当前任务 + 最近事件 |
 | GET | `/api/events` | SSE 实时事件流 |
 | GET | `/api/tasks?limit=50` | 任务历史 |
-| POST | `/api/tasks` | 下发指令 `{type, params?}` |
+| POST | `/api/tasks` | 下发指令 `{type, params?}`；`LinkStart*` 同类型未终结（或心跳仍观测到同类型占用）时拒绝 |
 | GET | `/api/screenshots?limit=20` | 截图列表 |
 | GET | `/api/screenshots/:id` | 截图文件 |
 | GET | `/api/devices/pending` | 待批准设备 |
@@ -132,7 +132,7 @@ remotePort = 24325
 | `dashboardToken` | 随机生成 | 仪表盘 API 鉴权令牌 |
 | `heartbeatIntervalSec` | `30` | HeartBeat 注入间隔 |
 | `screenshotIntervalSec` | `300` | 截图采集间隔 |
-| `staleMinutes` | `10` | dispatched / running 超过该时间无终结回报则判定超时 |
+| `staleMinutes` | `10` | dispatched / running 超过该时间无终结回报则判定超时。HeartBeat 仍观测到的任务会刷新该计时，长任务不会只因跑过 10 分钟被误标 |
 | `screenshotKeepCount` | `50` | 截图保留张数 |
 | `offlineAfterSec` | `5` | 无轮询判定离线阈值 |
 

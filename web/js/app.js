@@ -1,5 +1,6 @@
-import { ApiClient, ApiClientError, mapApiError } from './api.js?v=20260913-security1';
+import { ApiClient, ApiClientError, mapApiError } from './api.js?v=20260923-followup1';
 import {
+  canQueueAgainWhileInFlight,
   clearPendingConfirmationTasks,
   isActionControlDisabled,
   isLongRunningCommandType,
@@ -10,8 +11,9 @@ import {
   parseEventDetail,
   reconcilePendingConfirmationTasks,
   restoreInFlightTasks,
-} from './model.js?v=20260922-inflight2';
-import { renderQuickActionWrapHtml, renderStuckClearButtonHtml } from './action-ui.js?v=20260922-inflight2';
+  shouldOfferInFlightConfirm,
+} from './model.js?v=20260923-followup1';
+import { renderInFlightSheetHtml, renderQuickActionWrapHtml, renderStuckClearButtonHtml } from './action-ui.js?v=20260923-followup1';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
 import {
   captureSheetContext,
@@ -248,7 +250,19 @@ function isActionDisabled(type, device = state.selectedDevice) {
 }
 
 function shouldOpenInFlightConfirm(type, device = state.selectedDevice) {
-  return isLongRunningCommandType(type) && Boolean(taskForAction(type, device)) && !isActionSending(type, device);
+  return shouldOfferInFlightConfirm({
+    type,
+    sending: isActionSending(type, device),
+    inFlight: Boolean(taskForAction(type, device)),
+    device: (state.overview?.devices ?? []).find((item) => item.device === device),
+  });
+}
+
+function canQueueAgain(type, device = state.selectedDevice) {
+  return canQueueAgainWhileInFlight({
+    sending: isActionSending(type, device),
+    device: (state.overview?.devices ?? []).find((item) => item.device === device),
+  });
 }
 
 function renderStuckClearButton(type, { id } = {}) {
@@ -894,20 +908,19 @@ function renderConfirmSheet(sheet) {
 
 function renderInFlightSheet(sheet) {
   const type = sheet.type;
-  const label = taskLabel(type);
-  const sending = isActionSending(type);
   const pending = isPendingConfirmationTask(taskForAction(type));
-  return `
-    <div class="sheet-heading"><div><h2 class="sheet-title">任务进行中</h2><p class="sheet-caption">可以选择再排队或先停止</p></div></div>
-    <p class="sheet-copy">${escapeHtml(label)}仍在进行。再下一单会排队等待；先 Stop 将尝试停止当前远程任务。</p>
-    <p class="sheet-note">停止命令回报后仍需等待心跳确认空闲；队列中后续任务可能继续执行。</p>
-    ${pending ? `<p class="feedback-line feedback-pending"><span>结果待确认</span>${renderStuckClearButton(type)}</p>` : ''}
-    <div class="sheet-actions">
-      <button class="secondary-button" type="button" data-action="queue-again" data-type="${attr(type)}" ${sending ? 'disabled' : ''}>再下一单</button>
-      <button class="danger-button" type="button" data-action="stop-current" ${isActionDisabled('StopTask') ? 'disabled' : ''}>先 Stop</button>
-    </div>
-    <div class="sheet-actions single"><button class="secondary-button" type="button" data-action="close-sheet">取消</button></div>
-  `;
+  return renderInFlightSheetHtml({
+    type,
+    label: taskLabel(type),
+    pending,
+    sending: isActionSending(type),
+    queueAgainEnabled: canQueueAgain(type),
+    stopDisabled: isActionDisabled('StopTask'),
+    observedCurrent: !canQueueAgainWhileInFlight({ device: selectedDeviceRecord() }),
+    attr,
+    escapeHtml,
+    stuckClearButtonHtml: pending ? renderStuckClearButton(type) : '',
+  });
 }
 
 function renderSheet() {
@@ -1431,6 +1444,7 @@ async function sendTask(type, { params, confirm = false, force = false } = {}) {
     return false;
   }
   if (isActionSending(type, device) || (!force && isActionBusy(type, device))) return false;
+  if (force && isLongRunningCommandType(type) && !canQueueAgain(type, device)) return false;
   const key = actionKey(type, device);
   state.actionInProgress.add(key);
   render();
@@ -1752,7 +1766,9 @@ async function handleAction(target) {
     return;
   }
   if (action === 'queue-again') {
-    const ok = await sendTask(target.dataset.type, { force: true });
+    const type = target.dataset.type;
+    if (!canQueueAgain(type)) return;
+    const ok = await sendTask(type, { force: true });
     if (ok) closeSheet();
     return;
   }

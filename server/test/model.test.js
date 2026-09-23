@@ -139,15 +139,41 @@ test('clearPendingConfirmationTasks 只清除指定的幽灵 pending', async (t)
   assert.deepEqual(cleared.map((task) => task.id), ['real-1', 'pending:2']);
 });
 
-test('长 LinkStart 进行中不禁用控件，截图等短操作仍锁定', async (t) => {
-  const { isLongRunningCommandType, isActionControlDisabled } = await loadModel(t);
+test('长任务白名单仅覆盖一键除草与自动肉鸽，短 LinkStart-* 仍锁定', async (t) => {
+  const {
+    canQueueAgainWhileInFlight,
+    isLongRunningCommandType,
+    isActionControlDisabled,
+    shouldOfferInFlightConfirm,
+  } = await loadModel(t);
 
   assert.equal(isLongRunningCommandType('LinkStart'), true);
   assert.equal(isLongRunningCommandType('LinkStart-AutoRoguelike'), true);
+  assert.equal(isLongRunningCommandType('LinkStart-Recruiting'), false);
+  assert.equal(isLongRunningCommandType('LinkStart-Base'), false);
+  assert.equal(isLongRunningCommandType('LinkStart-Mall'), false);
   assert.equal(isLongRunningCommandType('CaptureImageNow'), false);
   assert.equal(isActionControlDisabled({ type: 'LinkStart', inFlight: true }), false);
+  assert.equal(isActionControlDisabled({ type: 'LinkStart-AutoRoguelike', inFlight: true }), false);
   assert.equal(isActionControlDisabled({ type: 'LinkStart', sending: true, inFlight: true }), true);
+  assert.equal(isActionControlDisabled({ type: 'LinkStart-Recruiting', inFlight: true }), true);
   assert.equal(isActionControlDisabled({ type: 'CaptureImageNow', inFlight: true }), true);
+
+  assert.equal(shouldOfferInFlightConfirm({ type: 'LinkStart', inFlight: true }), true);
+  assert.equal(shouldOfferInFlightConfirm({ type: 'LinkStart-Recruiting', inFlight: true }), false);
+  assert.equal(shouldOfferInFlightConfirm({
+    type: 'LinkStart-AutoRoguelike',
+    inFlight: false,
+    device: { current_task_id: 'job-1' },
+  }), true);
+  assert.equal(shouldOfferInFlightConfirm({
+    type: 'LinkStart-AutoRoguelike',
+    inFlight: false,
+    device: { current_task_id: '' },
+  }), false);
+  assert.equal(canQueueAgainWhileInFlight({ device: { current_task_id: 'job-1' } }), false);
+  assert.equal(canQueueAgainWhileInFlight({ device: { current_task_id: '' } }), true);
+  assert.equal(canQueueAgainWhileInFlight({ sending: true, device: { current_task_id: '' } }), false);
 });
 
 test('isStopTaskStopped 仅在 StopTask success 且 overview 观测为空闲时返回 true', async (t) => {

@@ -1,5 +1,6 @@
 // backdate-task.js —— 自测辅助（M2 验收 stale 回收用）：把指定任务的 dispatched_at 改为 N 分钟前，
 // 使其落入 stale 回收器的扫描范围（dispatched / running 超 staleMinutes 无终结回报 → stale，不再下发）。
+// HeartBeat 若仍观测到该任务会刷新 dispatched_at；验证「失联超时」时需停掉心跳或回拨后尽快回收。
 // 用法：node tools/backdate-task.js <task_id> [minutes]
 //   <task_id>  任务 id（insert-task.js 输出的 id；也可从 /api/tasks 或库里查）
 //   [minutes]  回拨分钟数，默认 11（大于 staleMinutes 默认值 10 即可触发）

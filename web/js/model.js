@@ -68,9 +68,31 @@ export function isPendingConfirmationTask(task) {
   return typeof task.id === 'string' && task.id.startsWith(PENDING_ID_PREFIX);
 }
 
-/** 一键除草 / 肉鸽等长 LinkStart 流程：进行中时快捷按钮保持可点。 */
+/** 仅一键除草 / 自动肉鸽走「进行中可点 → 再确认」；其余 LinkStart-* 仍用 busy 禁用。 */
+const LONG_RUNNING_COMMAND_TYPES = new Set(['LinkStart', 'LinkStart-AutoRoguelike']);
+
 export function isLongRunningCommandType(type) {
-  return type === 'LinkStart' || (typeof type === 'string' && type.startsWith('LinkStart-'));
+  return LONG_RUNNING_COMMAND_TYPES.has(type);
+}
+
+/** HeartBeat 上报的 current_task_id 非空，视为设备仍被顺序任务占用。 */
+export function hasObservedCurrentTask(device) {
+  return typeof device?.current_task_id === 'string' && device.current_task_id.length > 0;
+}
+
+/**
+ * 长任务在途，或心跳仍观测到占用时，打开进行中确认，避免直接再入队。
+ * 公招 / 基建等短流程不会走到这里（控件保持 disabled）。
+ */
+export function shouldOfferInFlightConfirm({ type, sending = false, inFlight = false, device } = {}) {
+  if (!isLongRunningCommandType(type) || sending) return false;
+  return Boolean(inFlight) || hasObservedCurrentTask(device);
+}
+
+/** 心跳仍观测到占用时不允许「再下一单」，需先 Stop。 */
+export function canQueueAgainWhileInFlight({ sending = false, device } = {}) {
+  if (sending) return false;
+  return !hasObservedCurrentTask(device);
 }
 
 function sameActionTarget(left, right) {
@@ -112,8 +134,8 @@ export function clearPendingConfirmationTasks(tasks = [], { type, device, id } =
 }
 
 /**
- * 发送中始终禁用；长 LinkStart 在途只展示「进行中」，不把控件 disabled。
- * 截图等短操作仍按原 busy 锁定。
+ * 发送中始终禁用；一键除草 / 自动肉鸽在途只展示「进行中」，不把控件 disabled。
+ * 公招 / 基建 / 截图等短操作仍按原 busy 锁定。
  */
 export function isActionControlDisabled({ type, sending = false, inFlight = false } = {}) {
   if (sending) return true;
