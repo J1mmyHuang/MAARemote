@@ -119,6 +119,43 @@ test('普通任务的多余 payload 不进入任务记录或事件，解析预�
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM screenshots').get().n, 0);
 });
 
+test('reportStatus 的 user 不匹配按 IP 限频：先 403，超阈值后 429；正确 user 不受限', async (t) => {
+  const { app, db, devices } = await fixture(t);
+  db.prepare("INSERT INTO tasks (id, device_id, type, status) VALUES (?, ?, 'LinkStart', 'dispatched')").run('rate-limit-task', devices[0].id);
+
+  const wrong = {
+    method: 'POST',
+    url: '/maa/reportStatus',
+    payload: { user: 'definitely-not-the-token', device: devices[0].device, task: 'rate-limit-task', status: 'SUCCESS' },
+  };
+  const right = {
+    method: 'POST',
+    url: '/maa/reportStatus',
+    payload: { user: config.maaUserToken, device: devices[0].device, task: 'rate-limit-task', status: 'SUCCESS' },
+  };
+
+  // 与 maa.js GETTASK_FAIL_MAX 同等：窗口内 10 次失败仍为 403 user_mismatch
+  for (let i = 0; i < 10; i++) {
+    const response = await app.inject(wrong);
+    assert.equal(response.statusCode, 403, `第 ${i + 1} 次失败应为 403`);
+    assert.deepEqual(response.json(), { ok: false, error: 'user_mismatch' });
+  }
+
+  // 穿插一次合法回报：不得计入失败次数，且不得被限流
+  const ok = await app.inject(right);
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.json().ok, true);
+
+  const limited = await app.inject(wrong);
+  assert.equal(limited.statusCode, 429);
+  assert.deepEqual(limited.json(), { ok: false, error: 'too_many_requests' });
+
+  // 已终结任务的重复合法回报仍 200（只限失败流量）
+  const again = await app.inject(right);
+  assert.equal(again.statusCode, 200);
+  assert.equal(again.json().ok, true);
+});
+
 test('仪表盘私密响应和错误响应禁止缓存，截图禁止内容嗅探', async (t) => {
   const { app, db, devices, headers } = await fixture(t);
   // 文件只用已有公开测试文件，避免写入真实截图目录。
