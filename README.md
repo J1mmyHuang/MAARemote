@@ -15,7 +15,7 @@ flowchart LR
         MAA -->|"HTTP 轮询（约 1 秒）"| SRV["MAARemote 服务端<br>127.0.0.1:24325"]
     end
     SRV -->|"Cloudflare Tunnel / frp / 端口转发"| NET["https://maa.你的域名.com"]
-    NET -->|"HTTPS（REST + SSE）"| BR["浏览器"]
+    NET -->|"HTTPS（REST + SSE + Web Push）"| BR["浏览器"]
 ```
 
 MAA 桌面端在「设置 → 远程控制」中填入本服务端的两个端点后，会以约 1 秒间隔轮询取任务、完成即回报——服务端由此获知在线状态与任务生命周期，并通过下发 `HeartBeat` / `CaptureImageNow` 等任务实现当前任务探测与截图采集。
@@ -29,23 +29,24 @@ MAA 桌面端在「设置 → 远程控制」中填入本服务端的两个端�
 - 截图采集：周期/手动下发 `CaptureImageNow`，Base64 落盘 + 保留策略
 - 指令下发：`LinkStart` 及各子功能、`StopTask`、`Toolbox-Gacha*`、`Settings-*`
 - 仪表盘 API：总览 / SSE 实时事件流 / 任务历史 / 截图 / 设备批准，`dashboardToken` 鉴权
+- 任务完成通知：`task_finished` 触发浏览器通知（任务名称、成功/失败、任务级耗时）；权限由用户点击开启，同一任务不重复通知，页面打开时即可使用。**后台 Web Push 是可选功能**（主屏幕 Web App、页面关闭时也能收到），需要 HTTPS 并由用户在设置中手动开启；订阅、VAPID 密钥与去重状态保存在 server/data/push.json，不新增 SQLite 表、字段或运行依赖
 
 ## 环境要求
 
 - Windows，Node.js ≥ 18（开发验证于 v24）
 - **PowerShell 7（pwsh.exe）**——本项目所有命令统一通过 `pwsh -NoProfile -Command` 执行
+- 仅支持 Windows：托盘、计划任务守护和推送存储文件的权限收紧（icacls）都依赖 Windows；双击入口（*.cmd）调用 pwsh.exe
 
 ## 快速开始（本机联调）
 
 ### 1. 启动服务
 
 ```powershell
-# 一键启动：自动安装依赖、检测端口占用、前台运行（Ctrl+C 优雅退出）
+# 一键启动：按需准备依赖、检测端口占用、前台运行（Ctrl+C 优雅退出）
 pwsh -NoProfile -File .\start.ps1
 
-# 或手动等价方式：
+# 或手动启动（要求依赖已经准备）：
 cd server
-npm install
 node src/index.js
 ```
 
@@ -95,11 +96,16 @@ remotePort = 24325
 
 ## 部署（公网访问）
 
+> 公网访问策略：仪表盘和 /api/* 由 Cloudflare Access 的 Allow 策略加 dashboardToken 双层保护，未登录访问返回 302；/api/push/* 不对匿名用户开放。若使用可选的 iPhone 后台推送且整站被 Access 保护，需让 /sw.js、/manifest.webmanifest 和两个图标匿名可读（可选的边缘 Worker 方案见 DEPLOY.md §10）。
+
 完整步骤见 **[DEPLOY.md](DEPLOY.md)**，要点：
 
-1. **服务常驻**：日常用 `start.ps1` 前台运行；长期挂机推荐系统托盘 `pwsh -NoProfile -File tray.ps1`（右键菜单启停/重启/开机自启，命令行 `tray.ps1 -Action start|stop|restart|status|autostart-on|autostart-off` 同效，见 DEPLOY.md §6），并把电源计划设为不休眠。
-2. **公网接入（推荐 Cloudflare Tunnel）**：`winget install Cloudflare.cloudflared` → `cloudflared tunnel login`（浏览器授权）→ `tunnel create` → `tunnel route dns`（绑定你的子域名）→ 按 `deploy\cloudflared-config.yml` 示例放置配置与凭据 → `cloudflared service install`。全程**零防火墙入站规则**（服务仅监听 127.0.0.1，cloudflared 只做出站连接），HTTPS 由 Cloudflare 自动终结。
-3. **MAA 接入**：MAA「设置 → 远程控制」两个端点填 `https://<你的域名>/maa/getTask` 与 `.../maa/reportStatus`，用户标识符填 `config.json` 的 `maaUserToken`；首次连接 401 后在仪表盘「待批准设备」中核对设备标识符并批准（见上方 API）。
+1. **核心启动路径**：真正承接 MAA 轮询的是 Node 服务；`web/` 前端由同一个 Fastify 进程托管，不是第二个需要单独启动的前端服务。最小路径是 `start.ps1` → Node 服务 → 浏览器访问仪表盘。
+2. **可选桌面层**：`tray.ps1` 只是托盘管理界面和命令行工具，需要桌面管理时再启动；`tray-guard.ps1` 加 Windows 计划任务是更进一步的可选守护，只监督托盘，不管理 Node 服务。两者都默认关闭，不是项目运行前置条件。托盘的 Run 键自启与计划任务守护互斥，同一时间只启用一种，详见 DEPLOY.md §6。
+3. **公网接入（推荐 Cloudflare Tunnel）**：`winget install Cloudflare.cloudflared` → `cloudflared tunnel login`（浏览器授权）→ `tunnel create` → `tunnel route dns`（绑定你的子域名）→ 按 `deploy\cloudflared-config.yml` 示例放置配置与凭据 → `cloudflared service install`。全程**零防火墙入站规则**（服务仅监听 127.0.0.1，cloudflared 只做出站连接），HTTPS 由 Cloudflare 自动终结。
+4. **MAA 接入**：MAA「设置 → 远程控制」两个端点填 `https://<你的域名>/maa/getTask` 与 `.../maa/reportStatus`，用户标识符填 `config.json` 的 `maaUserToken`；首次连接 401 后在仪表盘「待批准设备」中核对设备标识符并批准（见上方 API）。
+
+> 托盘守护（`tray-guard.ps1` 加 Windows 计划任务）是可选功能，默认关闭，不是运行前置条件；安装、状态和回滚见 DEPLOY.md §6.2。右键以管理员身份运行 `安装 MAARemote 托盘守护.cmd` 可一键安装，该入口不会启动托盘或 Node 服务。
 
 ## API 一览
 
@@ -136,12 +142,31 @@ remotePort = 24325
 | `screenshotKeepCount` | `50` | 截图保留张数 |
 | `offlineAfterSec` | `5` | 无轮询判定离线阈值 |
 
+## 任务完成通知与后台推送（后台推送为可选功能）
+
+- 页面通知：默认可用，无需配置。页面打开时通知任务名称、成功/失败和任务级耗时，同一任务只通知一次。
+- 后台 Web Push（可选）：页面关闭或手机锁屏时也能收到。需要 HTTPS；iPhone 需 iOS 16.4 及以上，并先把页面添加到主屏幕，再在 Web App 的「设置与工具」点击「开启后台推送」。不开启不影响其他任何功能。
+- 开箱即用：Service Worker、manifest 和图标已放在 web/，由 Node 服务同源提供，只要能通过 HTTPS 访问就能登记订阅。服务端只在 task_finished 时推送，内容仅含任务名称、结果和耗时，用 Node 内置 HTTPS 投递，不新增运行依赖。
+- 推送由 Apple、Google 或 Mozilla 的 Push Service 投递，属于尽力而为，可能延迟、合并或丢弃。
+- 只有「整站被 Cloudflare Access 登录保护」时才需要额外步骤：iOS 注册 Service Worker 不能遇到登录重定向，这时可选择部署 [cloudflare/p4b-assets/](cloudflare/p4b-assets/README.md) 的边缘 Worker，让这四个不含秘密的文件匿名可读，见 DEPLOY.md §10。
+
 ## 仓库结构
 
 ```
-start.ps1         一键启动（安装依赖 + 端口检测 + 前台运行）
-tray.ps1          系统托盘常驻 + 命令行启停（开机自启，见 DEPLOY.md §6）
-DEPLOY.md         部署指南（Cloudflare Tunnel / 托盘与 NSSM 常驻 / MAA 接入 / 故障排查）
+start.ps1         核心启动入口（按需准备依赖 + 端口检测 + 前台运行）
+tray.ps1          可选系统托盘 + 命令行启停（需要桌面管理时使用）
+tray-guard.ps1    可选托盘守护（只监督托盘，不管理 Node 服务）
+tray-task.ps1     可选计划任务安装、状态、停止、卸载（默认不注册）
+install-tray-guard.ps1
+                  计划任务一键安装预检与安装包装器（不自动启动服务）
+安装 MAARemote 托盘守护.cmd
+                  右键以管理员身份运行的一键入口
+prepare-dependencies.ps1
+                  依赖健康检查与按需安装（start.ps1 与托盘启动共用）
+*.cmd             双击入口：启动 / 打开托盘 / 停止 / 安装托盘守护
+cloudflare/p4b-assets/
+                  可选：边缘 Worker，用于 Access 保护下的 iPhone 后台推送
+DEPLOY.md         部署指南（Cloudflare Tunnel / 分层常驻方案 / MAA 接入 / 故障排查）
 server/           后端（Node.js + Fastify + SQLite）
   src/            入口、路由、调度器
   data/           运行时生成：maa.db、screenshots/（已忽略）
