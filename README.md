@@ -208,6 +208,14 @@ web/LICENSE       前端 AGPL-3.0-or-later
 
 根目录 LICENSE 是 MPL-2.0 官方原文，所以 GitHub 会把仓库识别为 MPL-2.0；前端部分以 web/LICENSE 为准。
 
+版权所有 © 2026 J1mmyHuang。每个源文件顶部有 `SPDX-License-Identifier` 标记，注明该文件适用的许可证；文件标记与上表不一致时以文件标记为准。JSON、SVG 和 Markdown 文件不带标记，按所在目录适用上表。
+
+### 贡献
+
+欢迎提交 Issue 和 Pull Request。你提交的修改按它所在目录的许可证授权：web/ 下为 AGPL-3.0-or-later，其余为 MPL-2.0。提交即表示你有权以该许可证贡献这些内容。
+
+请不要把 web/ 的代码复制进 server/，也不要反过来：两边需要共享逻辑时，各自单独实现，否则会让文件的许可证归属变得不清。
+
 本项目是 MAA 官方远程控制协议的独立实现，未复制或链接 MAA 代码；MAA 及其商标归其各自权利人所有。
 
 安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。

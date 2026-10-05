@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // 快捷操作与卡住状态的纯 HTML 片段（无 DOM），供 app.js 与单测共用。
 
 export function renderStuckClearButtonHtml(type, { id, attr } = {}) {

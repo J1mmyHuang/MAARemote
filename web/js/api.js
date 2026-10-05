@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 const DEFAULT_TIMEOUT_MS = 15_000;
 const SSE_EVENT_TYPES = [
   'online',

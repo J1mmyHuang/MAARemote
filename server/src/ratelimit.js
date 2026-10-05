@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // 进程内滑动窗口限流器（安全修复轮 Mr-sec1 低2，自实现零依赖，禁止新增 npm 依赖）。
 //
 // 设计：

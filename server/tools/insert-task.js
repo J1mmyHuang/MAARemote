@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // insert-task.js —— 自测辅助：向指定 mock 设备插入一条 queued 任务并打印任务 id。
 // 用法：node tools/insert-task.js <type> [params] [--device D]
 //   <type>    任务类型，如 LinkStart、CaptureImageNow、Settings-Stage1 等

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 const CONTENT_TYPES = Object.freeze({
   "/sw.js": "text/javascript; charset=utf-8",
   "/manifest.webmanifest": "application/manifest+json; charset=utf-8",

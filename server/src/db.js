@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // SQLite 建库与四表结构。
 // 表结构严格按《实现报告.md》§4.2：devices / tasks / events / screenshots，字段不得增删改名。
 // 全部 SQL 均为静态语句 + prepare 参数绑定，禁止任何字符串拼接/模板串拼 SQL。

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MPL-2.0
 # MAARemote P2 one-click scheduled-task installer.
 # This script only calls tray-task.ps1; it does not duplicate task or HKCU Run logic.
 

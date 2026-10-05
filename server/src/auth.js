@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // 仪表盘鉴权：/api/* 全部要求 dashboardToken。
 // 支持两种携带方式，任一匹配即放行：
 //   1. Authorization: Bearer <dashboardToken>

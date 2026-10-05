@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // mock-maa.js —— 模拟 MAA 客户端（自测用）。
 // 用法：node tools/mock-maa.js [--user U] [--device D] [--delay 毫秒] [--once]
 //   --user   默认取 server/config.json 的 maaUserToken；可手动指定以便测 403

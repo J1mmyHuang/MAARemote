@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // P4b 验收工具：通过现有 HTTP 契约模拟 MAA，触发一条 task_finished。
 // 不连接真实 MAA，不直接读写 SQLite；必须显式传入 --confirm-test-task。
 import crypto from 'node:crypto';

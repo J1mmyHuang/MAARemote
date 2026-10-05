@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // approve-device.js —— 备用工具：直接改库将设备 approved 置 1。
 // 【M4 起正常流程走仪表盘正式 API：POST /api/devices/:id/approve（待批准列表见
 //   GET /api/devices/pending；正式 API 会写 device_approved 事件并广播 SSE）】。

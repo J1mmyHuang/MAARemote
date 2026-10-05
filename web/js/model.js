@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // 前端状态只合并服务端的真实快照；不会根据时间或事件臆造 running/完成状态。
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'stale']);
 const IN_FLIGHT_STATUSES = new Set(['queued', 'dispatched', 'running']);

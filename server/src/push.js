@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // P4b Web Push：VAPID、RFC 8291 aes128gcm、订阅存储与 task_finished 投递。
 // 只使用 Node 内置模块；推送失败不会改变 MAA 任务状态，也不会阻塞主请求。
 import crypto from 'node:crypto';

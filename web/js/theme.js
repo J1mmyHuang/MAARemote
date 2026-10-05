@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 export const THEME_STORAGE_KEY = 'maaremote.theme-preference';
 export const THEME_PREFERENCES = new Set(['system', 'light', 'dark']);
 

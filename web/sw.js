@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // MAARemote 通知 Service Worker：页面关闭时接收 Web Push 并立即显示通知。
 // 不缓存、不拦截 fetch、不读取任何凭据；/api 与 /maa 请求完全不经过它。
 const DELIVERY_DB_NAME = 'maaremote-notification-delivery';

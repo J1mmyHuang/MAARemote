@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // 任务完成通知（P4）：只消费既有 task_finished 事件，不新增服务端字段，不改任务状态机。
 // 纯函数负责去重 / 首次基线 / 时效 / 补发上限；适配层负责权限状态与 Service Worker / 页面 Notification 投递。
 import { formatTaskDuration, parseEventDetail } from './model.js?v=20260923-followup2';

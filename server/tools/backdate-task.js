@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // backdate-task.js —— 自测辅助（M2 验收 stale 回收用）：把指定任务的 dispatched_at 改为 N 分钟前，
 // 使其落入 stale 回收器的扫描范围（dispatched / running 超 staleMinutes 无终结回报 → stale，不再下发）。
 // HeartBeat 若仍观测到该任务会刷新 dispatched_at；验证「失联超时」时需停掉心跳或回拨后尽快回收。

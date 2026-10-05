@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // 仪表盘 API（挂载于 /api 前缀）：
 //   GET  /api/overview                设备在线状态 + 最近事件
 //   GET  /api/tasks?limit=50          任务历史（按创建时间倒序）

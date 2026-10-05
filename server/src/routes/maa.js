@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // MAA 官方远程控制协议端点：POST /maa/getTask、POST /maa/reportStatus。
 // 协议红线（违反即实现错误）：
 // 1. getTask 响应必有 tasks 数组字段（空队列也返回 {"tasks":[]}），params 仅 Settings 类任务携带；

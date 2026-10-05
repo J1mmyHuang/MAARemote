@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MPL-2.0
 # MAARemote P2: scheduled-task tray guard manager
 #
 # The default action is status. install / uninstall modify the current user's

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // 进程内事件总线：所有「写 events 表」的地方统一经 recordAndPublishEvent，
 // 同步完成「入库 + 广播」，保证 SSE 订阅者收到的消息与 events 表记录一致（含 kind、detail、created_at）。
 import { EventEmitter } from 'node:events';

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { ApiClient, ApiClientError, mapApiError } from './api.js?v=20260923-followup2';
 import {
   canQueueAgainWhileInFlight,

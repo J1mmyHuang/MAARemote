@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // 仪表盘同源静态托管：不增加依赖，并且永不接管 API 或 MAA 协议路径。
 import fs from 'node:fs/promises';
 import path from 'node:path';

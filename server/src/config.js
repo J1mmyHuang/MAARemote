@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // 配置加载与首次运行生成。
 // 字段与默认值严格对齐 README.md「配置项」表（8 个字段，不得增删）；
 // maaUserToken / dashboardToken 仅在运行时用 Node crypto 随机生成，源码中不得出现任何可用凭据字面量。

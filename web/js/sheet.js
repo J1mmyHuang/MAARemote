@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 const MIN_CLOSE_DISTANCE_PX = 128;
 const MAX_CLOSE_DISTANCE_PX = 224;
 const CLOSE_DISTANCE_RATIO = 0.45;

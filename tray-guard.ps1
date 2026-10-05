@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MPL-2.0
 # MAARemote P2: tray guard process
 #
 # This script only supervises tray.ps1; it never starts, stops, or restarts Node.

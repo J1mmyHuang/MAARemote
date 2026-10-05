@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // 后台定时协程：离线检测器 + stale 回收器 + 心跳注入器 + 截图采集器（setInterval，服务关闭时 clearInterval）。
 //
 // 1. 离线检测器（每 2s）：遍历 approved 设备，按 now - last_seen >= offlineAfterSec*1000 判离线。

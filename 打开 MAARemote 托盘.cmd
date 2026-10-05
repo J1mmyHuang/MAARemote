@@ -1,4 +1,5 @@
 @echo off
+REM SPDX-License-Identifier: MPL-2.0
 setlocal EnableExtensions DisableDelayedExpansion
 chcp 65001 >nul 2>&1
 
