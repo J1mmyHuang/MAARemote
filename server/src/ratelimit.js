@@ -8,7 +8,7 @@
 //     返回是否超限（数组长度 > max）。连续失败会持续占位，停止失败并静默一个窗口后自动恢复。
 //   - 内存防膨胀：定期清理定时器删除空/全过期 key；清理定时器 unref，不阻止进程退出。
 //
-// 限流阈值常量分散在使用方文件顶部（getTask 403 见 routes/maa.js、/api 401 见 routes/api.js，
+// 限流阈值常量分散在使用方文件顶部（getTask/reportStatus 403 见 routes/maa.js、/api 401 见 routes/api.js，
 // 同 M2/M3 协程常量惯例，不添加 config 字段）。
 
 // 清理周期默认与一个窗口对齐（60s），调用方无需感知

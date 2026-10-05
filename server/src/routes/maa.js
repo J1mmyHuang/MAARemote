@@ -14,7 +14,7 @@
 //       本插件 setErrorHandler 保证 /maa/* 框架级错误（413 大包、400 坏 JSON 等）响应体也带
 //       tasks:[] / ok:false，延续 M1 决策「非 200 响应体统一带 tasks:[]」。
 // [低1] maaUserToken 校验改用 auth.js 的 safeEqual（常量时间比较）。
-// [低2] getTask 403（user 不匹配）按来源 IP 滑动窗限频，超限 429（只限失败流量，见 ratelimit.js）。
+// [低2] getTask / reportStatus 403（user 不匹配）按来源 IP 滑动窗限频，超限 429（只限失败流量，见 ratelimit.js）。
 // [低3] reportStatus 仅接受 queued/dispatched/running → success/failed 的首次终结转换；
 //       已终结任务的重复/迟到回报不写事件、不落盘截图、不写 screenshots 行，响应仍 200。
 // [低4] 未批准（approved=0）设备登记数量设上限，达上限后新设备仍按未知设备 401、不入库。
@@ -34,8 +34,9 @@ const MONITOR_TYPES = new Set(['HeartBeat', 'CaptureImageNow']);
 const GET_TASK_BODY_LIMIT_BYTES = 64 * 1024;
 // reportStatus 的大包额度仅供图片；设备标识、任务标识与心跳仍受小字段预算约束。
 const METADATA_LIMIT_BYTES = 64 * 1024;
-// [低2] getTask 403（user 不匹配）按来源 IP 限频：60s 滑动窗口内最多 10 次失败，第 11 次起 429。
-//       只统计鉴权失败流量；user 正常的轮询（含 401 待批准设备）不进限流器。
+// [低2] getTask / reportStatus 403（user 不匹配）按来源 IP 限频：60s 滑动窗口内最多 10 次失败，第 11 次起 429。
+//       只统计鉴权失败流量；user 正常的轮询与回报（含 401 待批准设备）不进限流器。
+//       两端点各用独立限流器、共用同一阈值：失败次数互不影响，合法流量本来就不计入。
 const GETTASK_FAIL_WINDOW_MS = 60000;
 const GETTASK_FAIL_MAX = 10;
 // [低4] 未批准（approved=0）设备登记上限：达到上限后新设备仍按未知设备 401、不入库；
@@ -83,8 +84,13 @@ function taskDurationMs(taskRow, finishedAt) {
 export default async function maaRoutes(fastify, opts) {
   const { config, db, recordEvent } = opts;
 
-  // [低2] getTask 403 失败限流器（按来源 IP；仅 user 不匹配路径调用）
+  // [低2] getTask / reportStatus 403 失败限流器（按来源 IP；仅 user 不匹配路径调用）。
+  // 独立实例：一端的失败探测不改变另一端「第 11 次起 429」的曲线。
   const getTaskFailLimiter = createSlidingWindowLimiter({
+    windowMs: GETTASK_FAIL_WINDOW_MS,
+    max: GETTASK_FAIL_MAX,
+  });
+  const reportStatusFailLimiter = createSlidingWindowLimiter({
     windowMs: GETTASK_FAIL_WINDOW_MS,
     max: GETTASK_FAIL_MAX,
   });
@@ -223,6 +229,10 @@ export default async function maaRoutes(fastify, opts) {
 
     // user 不匹配 → 403（同 getTask；[低1] 常量时间比较）
     if (!safeEqual(user, config.maaUserToken)) {
+      // [低2] 403 失败按来源 IP 限频：60s 内超 10 次 → 429（响应仍带 ok:false）
+      if (reportStatusFailLimiter.hit(request.ip)) {
+        return reply.code(429).send({ ok: false, error: 'too_many_requests' });
+      }
       return reply.code(403).send({ ok: false, error: 'user_mismatch' });
     }
     if (Buffer.byteLength(device, 'utf8') + Buffer.byteLength(task, 'utf8') > METADATA_LIMIT_BYTES) {
