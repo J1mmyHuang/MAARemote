@@ -20,7 +20,7 @@
 # 行为要点：
 #   - start 以隐藏窗口后台进程启动 node src/index.js（工作目录 = server\），
 #     日志重定向 logs\service-out-<时间戳>.log / service-err-<时间戳>.log；
-#     server\node_modules 缺失时才执行 npm install --no-fund --no-audit（幂等）。
+#     依赖清单、成功标记或原生加载检查不通过时才准备依赖。
 #   - stop 为强制结束（Stop-Process）。SQLite 已开 WAL（server/src/db.js:70），
 #     强杀不会损坏已提交数据，最坏丢失最后一次未提交写入（详见 reports/M6-report.md）。
 #   - 托盘「退出」仅关闭托盘自身，不停止服务（服务是独立进程，MAA 轮询不中断）。
@@ -45,9 +45,413 @@ $script:CoreSrc = @'
 $serverDir  = Join-Path $scriptDir 'server'
 $configPath = Join-Path $serverDir 'config.json'
 $logsDir    = Join-Path $scriptDir 'logs'
+$trayEventLog = Join-Path $logsDir 'tray-events.log'
+$trayStatePath = Join-Path $logsDir 'tray-state.json'
 $trayDefaultPort = 24325
 $trayRunKey      = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $trayValueName   = 'MAARemoteTray'
+$trayStateSchemaVersion = 2
+$script:trayStateReadError = $false
+$script:lastTrayStateWriteError = ''
+$script:lastTrayProcessVerification = $null
+
+function Write-TrayEvent {
+    param(
+        [Parameter(Mandatory)][string]$Event,
+        [string]$Mode = 'gui',
+        [string]$Action = '',
+        [string]$Reason = '',
+        [object]$ExitCode = $null,
+        [string]$Message = '',
+        [string]$SessionId = '',
+        [object]$ProcessIdentity = $null
+    )
+    try {
+        if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+        $eventSessionId = $SessionId
+        if (-not $eventSessionId -and $script:traySessionId) { $eventSessionId = [string]$script:traySessionId }
+        $eventIdentity = $ProcessIdentity
+        if (-not $eventIdentity -and $script:traySessionIdentity) { $eventIdentity = $script:traySessionIdentity }
+        if ($eventSessionId -and (-not $eventIdentity -or [string]::IsNullOrWhiteSpace([string]$eventIdentity.process_start_ticks) -or [string]::IsNullOrWhiteSpace([string]$eventIdentity.process_name) -or [string]::IsNullOrWhiteSpace([string]$eventIdentity.process_path))) {
+            return $false
+        }
+        $record = [ordered]@{
+            timestamp           = (Get-Date).ToUniversalTime().ToString('o')
+            event               = $Event
+            pid                 = $PID
+            mode                = $Mode
+            session_id          = if ($eventSessionId) { [string]$eventSessionId } else { $null }
+            process_start_ticks = if ($eventIdentity) { [int64]$eventIdentity.process_start_ticks } else { $null }
+            process_name        = if ($eventIdentity) { [string]$eventIdentity.process_name } else { $null }
+            process_path        = if ($eventIdentity) { [string]$eventIdentity.process_path } else { $null }
+        }
+        if ($Action) { $record.action = $Action }
+        if ($Reason) { $record.reason = $Reason }
+        if ($null -ne $ExitCode) { $record.exit_code = $ExitCode }
+        if ($Message) { $record.message = $Message }
+        $line = $record | ConvertTo-Json -Compress -Depth 8 -ErrorAction Stop
+        Add-Content -LiteralPath $trayEventLog -Value $line -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    return $true
+}
+
+function Get-TrayProcessIdentity {
+    param([int]$ProcessId = $PID)
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction Stop
+        $startTicks = [int64]$process.StartTime.ToUniversalTime().Ticks
+        $path = [string]$process.MainModule.FileName
+        $processName = [string]$process.ProcessName
+        $cim = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f $ProcessId) -ErrorAction Stop | Select-Object -First 1
+        $commandLine = if ($cim) { [string]$cim.CommandLine } else { '' }
+        if ($startTicks -le 0 -or [string]::IsNullOrWhiteSpace($processName) -or [string]::IsNullOrWhiteSpace($path) -or [string]::IsNullOrWhiteSpace($commandLine)) { return $null }
+        return [ordered]@{
+            pid                 = [int]$ProcessId
+            process_start_ticks = $startTicks
+            process_name        = $processName
+            process_path        = $path
+            process_command_line = $commandLine
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Read-TrayTextShared {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            ([System.IO.FileShare]::Read -bor [System.IO.FileShare]::Write -bor [System.IO.FileShare]::Delete)
+        )
+        $reader = [System.IO.StreamReader]::new($stream, [System.Text.UTF8Encoding]::new($false, $true), $true)
+        return $reader.ReadToEnd()
+    } finally {
+        if ($reader) { $reader.Dispose() } elseif ($stream) { $stream.Dispose() }
+    }
+}
+
+function Write-TrayUtf8Atomic {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Text
+    )
+
+    $script:lastTrayStateWriteError = ''
+    $parent = Split-Path -Parent $Path
+    $tempPath = '{0}.{1}.{2}.tmp' -f $Path, $PID, ([guid]::NewGuid().ToString('N'))
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $stream = $null
+        try {
+            if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+                New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null
+            }
+            $bytes = [System.Text.UTF8Encoding]::new($false, $true).GetBytes($Text)
+            $stream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+            $stream.Dispose()
+            $stream = $null
+
+            [System.IO.File]::Move($tempPath, $Path, $true)
+            return $true
+        } catch [System.IO.IOException] {
+            $lastError = $_.Exception
+            if ($attempt -lt 3) { Start-Sleep -Milliseconds (25 * $attempt) }
+        } catch {
+            $lastError = $_.Exception
+            break
+        } finally {
+            if ($stream) { try { $stream.Dispose() } catch { } }
+            if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+                try { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue } catch { }
+            }
+        }
+    }
+    $script:lastTrayStateWriteError = if ($lastError) { [string]$lastError.Message } else { '托盘状态原子写入失败。' }
+    return $false
+}
+
+function Test-TrayCommandLineForScript {
+    param(
+        [AllowNull()][string]$CommandLine,
+        [Parameter(Mandatory)][string]$ExpectedScript
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
+    $match = [regex]::Match($CommandLine.Trim(), '(?i)(?:^|\s)(?:-file|-f)\s+(?:"(?<script>[^"]+)"|(?<script>\S+))(?<tail>.*)$')
+    if (-not $match.Success -or -not [string]::IsNullOrWhiteSpace([string]$match.Groups['tail'].Value)) { return $false }
+    $candidate = [string]$match.Groups['script'].Value
+    try {
+        $expected = [IO.Path]::GetFullPath($ExpectedScript).TrimEnd([char]92)
+        $actual = [IO.Path]::GetFullPath($candidate).TrimEnd([char]92)
+        return [string]::Equals($expected, $actual, [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
+function Get-TrayState {
+    $script:trayStateReadError = $false
+    try {
+        if (Test-Path $trayStatePath) {
+            return (Read-TrayTextShared -Path $trayStatePath | ConvertFrom-Json -ErrorAction Stop)
+        }
+    } catch {
+        $script:trayStateReadError = $true
+    }
+    return $null
+}
+
+function Convert-TrayTimestamp {
+    param([object]$Value)
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [DateTime]) { return $Value.ToUniversalTime().ToString('o') }
+    return [string]$Value
+}
+
+function Write-TrayState {
+    param(
+        [ValidateSet('running', 'stopped')][string]$Status,
+        [int]$ProcessId = $PID,
+        [string]$Mode = 'gui',
+        [string]$StartedAt = '',
+        [string]$Reason = '',
+        [object]$ExitCode = $null,
+        [string]$Message = '',
+        [string]$SessionId = '',
+        [string]$ExpectedSessionId = '',
+        [ValidateSet('running', 'stopped')][string]$ExpectedStatus = '',
+        [object]$ProcessIdentity = $null,
+        [string]$ExitEventName = ''
+    )
+    $mutex = $null
+    $acquired = $false
+    try {
+        if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+        $mutex = New-Object System.Threading.Mutex($false, 'Local\MAARemoteTray.State')
+        try {
+            $acquired = $mutex.WaitOne(5000)
+        } catch [System.Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) { return $false }
+
+        $current = $null
+        if (Test-Path $trayStatePath) {
+            try {
+                $current = Read-TrayTextShared -Path $trayStatePath | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+                if ($ExpectedSessionId) { return $false }
+            }
+        }
+        if ($ExpectedSessionId -and (-not $current -or [string]$current.session_id -ne $ExpectedSessionId)) {
+            return $false
+        }
+        if ($ExpectedStatus -and (-not $current -or [string]$current.status -ne $ExpectedStatus)) {
+            return $false
+        }
+        if (-not $SessionId -and $current -and $current.session_id) {
+            $SessionId = [string]$current.session_id
+        }
+        if (-not $ProcessIdentity) {
+            $ProcessIdentity = Get-TrayProcessIdentity -ProcessId $ProcessId
+        }
+        $state = [ordered]@{
+            schema_version      = $trayStateSchemaVersion
+            session_id          = $SessionId
+            status              = $Status
+            pid                 = $ProcessId
+            process_start_ticks = if ($ProcessIdentity) { [int64]$ProcessIdentity.process_start_ticks } else { $null }
+            process_name        = if ($ProcessIdentity) { [string]$ProcessIdentity.process_name } else { '' }
+            process_path        = if ($ProcessIdentity) { [string]$ProcessIdentity.process_path } else { '' }
+            process_command_line = if ($ProcessIdentity) { [string]$ProcessIdentity.process_command_line } else { '' }
+            mode                = $Mode
+            exit_event_name     = $ExitEventName
+            started_at          = $StartedAt
+            updated_at          = (Get-Date).ToUniversalTime().ToString('o')
+            last_exit_reason    = if ($Status -eq 'stopped') { $Reason } else { $null }
+            last_exit_code      = if ($Status -eq 'stopped') { $ExitCode } else { $null }
+            last_message        = if ($Status -eq 'stopped') { $Message } else { $null }
+        }
+        $json = $state | ConvertTo-Json -Compress -Depth 8 -ErrorAction Stop
+        return (Write-TrayUtf8Atomic -Path $trayStatePath -Text $json)
+    } catch {
+        $script:lastTrayStateWriteError = $_.Exception.Message
+        return $false
+    } finally {
+        if ($acquired -and $mutex) { try { $mutex.ReleaseMutex() } catch { } }
+        if ($mutex) { try { $mutex.Dispose() } catch { } }
+    }
+}
+
+function Get-TrayProcessVerification {
+    param([object]$State)
+    if (-not $State -or [string]$State.status -ne 'running') { return [pscustomobject]@{ Status = 'not_running'; Message = '' } }
+    $schemaVersion = 0
+    if (-not [int]::TryParse([string]$State.schema_version, [ref]$schemaVersion) -or $schemaVersion -lt 2) { return [pscustomobject]@{ Status = 'mismatch'; Message = '状态 schema 不受支持。' } }
+    $sessionId = [string]$State.session_id
+    $expectedName = [string]$State.process_name
+    $expectedPath = [string]$State.process_path
+    $storedCommandLine = [string]$State.process_command_line
+    if ($sessionId -notmatch '^[0-9a-fA-F]{32}$' -or [string]::IsNullOrWhiteSpace($expectedName) -or [string]::IsNullOrWhiteSpace($expectedPath) -or [string]::IsNullOrWhiteSpace($storedCommandLine)) { return [pscustomobject]@{ Status = 'mismatch'; Message = '状态缺少完整进程身份。' } }
+    $pidValue = 0
+    if (-not [int]::TryParse([string]$State.pid, [ref]$pidValue) -or $pidValue -le 0) { return [pscustomobject]@{ Status = 'mismatch'; Message = '状态 PID 无效。' } }
+    $expectedTicks = 0L
+    if (-not [int64]::TryParse([string]$State.process_start_ticks, [ref]$expectedTicks) -or $expectedTicks -le 0) { return [pscustomobject]@{ Status = 'mismatch'; Message = '状态进程启动时间无效。' } }
+    try {
+        $process = Get-Process -Id $pidValue -ErrorAction Stop
+    } catch {
+        $cim = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f $pidValue) -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cim) { return [pscustomobject]@{ Status = 'unknown'; Message = '无法读取现有 PID 的进程身份。' } }
+        return [pscustomobject]@{ Status = 'absent'; Message = '记录的 PID 已不存在。' }
+    }
+    try {
+        if ([int64]$process.StartTime.ToUniversalTime().Ticks -ne $expectedTicks) { return [pscustomobject]@{ Status = 'mismatch'; Message = 'PID 启动时间不匹配。' } }
+        if ([string]$process.ProcessName -ne $expectedName) { return [pscustomobject]@{ Status = 'mismatch'; Message = '进程名不匹配。' } }
+        $actualPath = [string]$process.MainModule.FileName
+        if ([string]::IsNullOrWhiteSpace($actualPath)) { return [pscustomobject]@{ Status = 'unknown'; Message = '无法读取进程可执行路径。' } }
+        $actualFullPath = [IO.Path]::GetFullPath($actualPath)
+        $expectedFullPath = [IO.Path]::GetFullPath($expectedPath)
+        if (-not [string]::Equals($actualFullPath, $expectedFullPath, [System.StringComparison]::OrdinalIgnoreCase)) { return [pscustomobject]@{ Status = 'mismatch'; Message = '进程可执行路径不匹配。' } }
+        $cim = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f $pidValue) -ErrorAction Stop | Select-Object -First 1
+        if (-not $cim -or [string]::IsNullOrWhiteSpace([string]$cim.CommandLine)) { return [pscustomobject]@{ Status = 'unknown'; Message = '无法读取托盘命令行。' } }
+        if (-not (Test-TrayCommandLineForScript -CommandLine ([string]$cim.CommandLine) -ExpectedScript (Join-Path $scriptDir 'tray.ps1'))) { return [pscustomobject]@{ Status = 'mismatch'; Message = '托盘命令行脚本路径或参数不匹配。' } }
+        $eventName = [string]$State.exit_event_name
+        if ($eventName -cne ('Local\MAARemoteTray.Exit.' + $sessionId)) { return [pscustomobject]@{ Status = 'mismatch'; Message = '托盘退出事件不匹配。' } }
+        $eventHandle = [System.Threading.EventWaitHandle]::OpenExisting($eventName)
+        $eventHandle.Dispose()
+        return [pscustomobject]@{ Status = 'alive'; Message = '托盘进程身份已完整核验。' }
+    } catch {
+        return [pscustomobject]@{ Status = 'unknown'; Message = $_.Exception.Message }
+    }
+}
+
+function Test-TrayProcessAlive {
+    param([object]$State)
+    return ((Get-TrayProcessVerification -State $State).Status -eq 'alive')
+}
+
+function Resolve-TrayPreviousSession {
+    $state = Get-TrayState
+    $verification = if ($state -and [string]$state.status -eq 'running') { Get-TrayProcessVerification -State $state } else { $null }
+    $script:lastTrayProcessVerification = $verification
+    if ($state -and [string]$state.status -eq 'running' -and $verification.Status -in @('absent', 'mismatch')) {
+        $message = '上次托盘没有写入退出记录，现有 PID 已不存在或身份不匹配；退出码不可得。'
+        $previousPid = 0
+        [void][int]::TryParse([string]$state.pid, [ref]$previousPid)
+        $stateWritten = Write-TrayState -Status 'stopped' -ProcessId $previousPid -Mode ([string]$state.mode) -StartedAt (Convert-TrayTimestamp $state.started_at) -Reason 'abnormal_exit_detected' -ExitCode 'unknown' -Message $message -SessionId ([string]$state.session_id) -ExpectedSessionId ([string]$state.session_id) -ExpectedStatus 'running' -ProcessIdentity $state
+        if ($stateWritten) {
+            [void](Write-TrayEvent -Event 'abnormal_exit_detected' -Mode ([string]$state.mode) -Reason 'missing_exit_record' -ExitCode 'unknown' -Message $message -SessionId ([string]$state.session_id) -ProcessIdentity $state)
+        }
+    }
+    return (Get-TrayState)
+}
+
+function Get-TrayRuntimeStatus {
+    $state = Resolve-TrayPreviousSession
+    if ($script:trayStateReadError) {
+        return [ordered]@{
+            Status     = 'unknown'
+            Pid        = 0
+            StartedAt  = ''
+            ExitReason = 'state_unreadable'
+            ExitCode   = 'unknown'
+        }
+    }
+    if ($state -and [string]$state.status -eq 'running' -and (Test-TrayProcessAlive -State $state)) {
+        return [ordered]@{
+            Status     = 'running'
+            Pid        = [int]$state.pid
+            StartedAt  = Convert-TrayTimestamp $state.started_at
+            ExitReason = ''
+            ExitCode   = $null
+        }
+    }
+    if ($state -and [string]$state.status -eq 'running') {
+        return [ordered]@{
+            Status     = 'unknown'
+            Pid        = [int]$state.pid
+            StartedAt  = Convert-TrayTimestamp $state.started_at
+            ExitReason = 'state_unverified'
+            ExitCode   = 'unknown'
+        }
+    }
+    return [ordered]@{
+        Status     = 'stopped'
+        Pid        = if ($state) { [int]$state.pid } else { 0 }
+        StartedAt  = if ($state) { Convert-TrayTimestamp $state.started_at } else { '' }
+        ExitReason = if ($state -and $state.last_exit_reason) { [string]$state.last_exit_reason } else { 'none' }
+        ExitCode   = if ($state -and $null -ne $state.last_exit_code) { $state.last_exit_code } else { 'unknown' }
+    }
+}
+
+function Start-TraySession {
+    param([string]$Mode = 'gui')
+    if (-not $script:trayInstanceMutexAcquired) {
+        throw '未取得托盘单实例保护，拒绝写入托盘运行状态。'
+    }
+    $script:traySessionStatePublished = $false
+    $null = Resolve-TrayPreviousSession
+    $injectedSessionId = [string]$env:MAAREMOTE_TRAY_SESSION_ID
+    if ($injectedSessionId -match '^[0-9a-fA-F]{32}$') {
+        $script:traySessionId = $injectedSessionId.ToLowerInvariant()
+    } else {
+        $script:traySessionId = [guid]::NewGuid().ToString('N')
+    }
+    $script:traySessionIdentity = Get-TrayProcessIdentity -ProcessId $PID
+    if (-not $script:traySessionIdentity) {
+        throw '无法读取托盘进程身份，拒绝写入可被错误归因的运行状态。'
+    }
+    $script:traySessionStartedAt = (Get-Date).ToUniversalTime().ToString('o')
+    $script:traySessionEnded = $false
+    $script:trayExitEventName = 'Local\MAARemoteTray.Exit.{0}' -f $script:traySessionId
+    $eventCreated = $false
+    $script:trayExitEvent = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::ManualReset, $script:trayExitEventName, [ref]$eventCreated)
+    if (-not $script:trayExitEvent) {
+        throw '无法创建托盘优雅退出事件，拒绝进入无人监督的运行态。'
+    }
+    if (-not (Write-TrayState -Status 'running' -ProcessId $PID -Mode $Mode -StartedAt $script:traySessionStartedAt -SessionId $script:traySessionId -ProcessIdentity $script:traySessionIdentity -ExitEventName $script:trayExitEventName)) {
+        throw '无法写入托盘运行状态，拒绝进入无人监督的运行态。'
+    }
+    $script:traySessionStatePublished = $true
+    [void](Write-TrayEvent -Event 'tray_start' -Mode $Mode -Message '托盘进程启动。')
+}
+
+function Complete-TraySession {
+    param(
+        [string]$Reason = 'normal',
+        [object]$ExitCode = 0,
+        [string]$Message = ''
+    )
+    if ($script:traySessionEnded) { return }
+    if (-not $script:trayInstanceMutexAcquired -or -not $script:traySessionStatePublished -or -not $script:traySessionId) { return }
+    $script:traySessionEnded = $true
+    $stateWritten = Write-TrayState -Status 'stopped' -ProcessId $PID -Mode 'gui' -StartedAt ([string]$script:traySessionStartedAt) -Reason $Reason -ExitCode $ExitCode -Message $Message -SessionId $script:traySessionId -ExpectedSessionId $script:traySessionId -ExpectedStatus 'running' -ProcessIdentity $script:traySessionIdentity -ExitEventName $script:trayExitEventName
+    if ($stateWritten) {
+        $exitEventWritten = Write-TrayEvent -Event 'tray_exit' -Mode 'gui' -Reason $Reason -ExitCode $ExitCode -Message $Message
+        if (-not $exitEventWritten) {
+            $script:trayExitCode = 1
+            $script:trayExitReason = 'event_log_write_failed'
+            $failureMessage = '托盘退出事件日志写入失败，无法确认正常退出。'
+            $corrected = Write-TrayState -Status 'stopped' -ProcessId $PID -Mode 'gui' -StartedAt ([string]$script:traySessionStartedAt) -Reason $script:trayExitReason -ExitCode 1 -Message $failureMessage -SessionId $script:traySessionId -ExpectedSessionId $script:traySessionId -ExpectedStatus 'stopped' -ProcessIdentity $script:traySessionIdentity -ExitEventName $script:trayExitEventName
+            if (-not $corrected) { $script:trayExitReason = 'state_write_failed' }
+        }
+    }
+    if (-not $stateWritten) {
+        if ($script:trayExitCode -eq 0) { $script:trayExitCode = 1 }
+        $script:trayExitReason = 'state_write_failed'
+        [void](Write-TrayEvent -Event 'tray_state_write_failed' -Mode 'gui' -Reason 'state_write_failed' -ExitCode 1 -Message '退出状态写入失败，无法确认本次退出为正常退出。')
+    }
+}
 
 function Get-ServerPort {
     # 与 server/src/config.js / start.ps1 同规则：整数 1-65535 采纳，否则默认 24325
@@ -120,9 +524,11 @@ function Test-NodeReady {
 
 function Invoke-ServiceStart {
     # 返回 $true 成功（含幂等）；$false 失败。过程信息走 Write-Host。
+    $script:lastServiceStartExitCode = 1
     $state = Get-ServiceState
     if ($state.Status -eq 'running') {
         Write-Host ("[启动] 服务已在运行（PID={0}），无需重复启动。" -f $state.Pid)
+        $script:lastServiceStartExitCode = 0
         return $true
     }
     if ($state.Status -eq 'foreign') {
@@ -136,19 +542,19 @@ function Invoke-ServiceStart {
         return $false
     }
 
-    # 依赖：仅在 node_modules 缺失时安装（幂等；比 start.ps1 每次安装更快，取舍见 M6 报告）
-    if (-not (Test-Path (Join-Path $serverDir 'node_modules'))) {
-        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-            Write-Host "[启动失败] server\node_modules 缺失且未找到 npm 命令，无法安装依赖。"
-            return $false
-        }
-        Write-Host "[依赖] server\node_modules 缺失，正在执行 npm install --no-fund --no-audit ..."
-        Push-Location $serverDir
-        try { & npm install --no-fund --no-audit } finally { Pop-Location }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host ("[启动失败] npm install 失败（退出码 {0}），请检查网络或在 server\ 目录手动执行 npm install 排查。" -f $LASTEXITCODE)
-            return $false
-        }
+    # 依赖：与 start.ps1 共用集中准备逻辑；服务已运行/端口冲突已在上方提前返回。
+    $dependencyScript = Join-Path $scriptDir 'prepare-dependencies.ps1'
+    if (-not (Test-Path -LiteralPath $dependencyScript -PathType Leaf)) {
+        Write-Host ("[启动失败] 未找到依赖准备脚本 {0}。" -f $dependencyScript)
+        $script:lastServiceStartExitCode = 66
+        return $false
+    }
+    & $dependencyScript -ServerDir $serverDir
+    $dependencyExitCode = [int]$LASTEXITCODE
+    if ($dependencyExitCode -ne 0) {
+        Write-Host ("[启动失败] 依赖准备未完成（退出码 {0}），服务未启动。" -f $dependencyExitCode)
+        $script:lastServiceStartExitCode = $dependencyExitCode
+        return $false
     }
 
     if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
@@ -182,6 +588,7 @@ function Invoke-ServiceStart {
             if ((Invoke-Probe401 -Port $state.Port) -eq '401') {
                 Write-Host ("启动成功 PID={0}" -f $proc.Id)
                 Write-Host ("[日志] {0} / {1}" -f $outLog, $errLog)
+                $script:lastServiceStartExitCode = 0
                 return $true
             }
         }
@@ -248,6 +655,27 @@ function Test-AutostartEnabled {
 
 function Invoke-AutostartOn {
     # 写 HKCU Run 键（当前用户，无需管理员），写后回读核对
+    try {
+        $root = [IO.Path]::GetFullPath($scriptDir).TrimEnd([char]92).ToLowerInvariant()
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($root)) | ForEach-Object { $_.ToString('x2') }) -join ''
+        } finally { $sha.Dispose() }
+        $taskName = 'MAARemote-P2-TrayGuard-' + $hash.Substring(0, 12)
+        $task = $null
+        try {
+            $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
+        } catch {
+            if ($_.Exception.Message -notmatch 'No MSFT_ScheduledTask objects|找不到.*MSFT_ScheduledTask|没有.*MSFT_ScheduledTask|0x80070002') { throw }
+        }
+        if ($null -ne $task) {
+            Write-Host '[自启失败] 已存在该项目计划任务；请先卸载守护，避免与 Run 自启重复监督。'
+            return $false
+        }
+    } catch {
+        Write-Host ('[自启失败] 无法核验计划任务互斥状态，未写入 Run：{0}' -f $_.Exception.Message)
+        return $false
+    }
     $cmd = Get-AutostartCommand
     if (-not $cmd) {
         Write-Host "[自启失败] 未找到 pwsh.exe，无法写入开机自启。"
@@ -302,6 +730,7 @@ if ($Action) {
         exit 1
     }
     Invoke-Expression $script:CoreSrc
+    [void](Write-TrayEvent -Event 'cli_action' -Mode 'cli' -Action $Action)
 
     $ok = $true
     switch ($Action) {
@@ -326,21 +755,47 @@ if ($Action) {
                     Write-Host "说明：端口被其他程序占用（探测非 401），不是本服务。"
                 }
             }
+            $trayStatus = Get-TrayRuntimeStatus
+            if ($trayStatus.Status -eq 'running') {
+                Write-Host ("TRAY_STATUS=running PID={0} STARTED_AT={1}" -f $trayStatus.Pid, $trayStatus.StartedAt)
+            } elseif ($trayStatus.Status -eq 'unknown') {
+                Write-Host ("TRAY_STATUS=unknown PID=0 STARTED_AT= LAST_EXIT_REASON={0} LAST_EXIT_CODE=unknown" -f $trayStatus.ExitReason)
+            } else {
+                Write-Host ("TRAY_STATUS=stopped PID={0} STARTED_AT={1} LAST_EXIT_REASON={2} LAST_EXIT_CODE={3}" -f $trayStatus.Pid, $trayStatus.StartedAt, $trayStatus.ExitReason, $trayStatus.ExitCode)
+            }
         }
     }
-    if ($ok) { exit 0 } else { exit 1 }
+    if ($ok) { exit 0 }
+    if ($Action -eq 'start' -and $script:lastServiceStartExitCode -is [int] -and $script:lastServiceStartExitCode -gt 0) {
+        exit $script:lastServiceStartExitCode
+    }
+    exit 1
 }
 
 # ============================================================================
 # 托盘 GUI 模式（无参数）：NotifyIcon + 消息循环，探测与动作放后台 runspace
 # ============================================================================
+Invoke-Expression $script:CoreSrc
+$script:trayExitCode = 0
+$script:trayExitReason = 'normal'
+$script:traySessionStartedAt = ''
+$script:traySessionId = ''
+$script:traySessionIdentity = $null
+$script:traySessionEnded = $false
+$script:trayExitEventName = ''
+$script:trayExitEvent = $null
+$script:runtimeFailureRecorded = $false
+$script:trayMessageLoopStarted = $false
+$script:trayInstanceMutexAcquired = $false
+$script:traySessionStatePublished = $false
+
 try {
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-} catch {
-    Write-Host ("[错误] 加载 Windows Forms 失败：{0}" -f $_.Exception.Message)
-    exit 1
-}
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+    } catch {
+        throw ("加载 Windows Forms 失败：{0}" -f $_.Exception.Message)
+    }
 
 # ---- Win32 API（控制台隐藏 / 图标句柄释放）----
 if (-not ('MAARemote.Native' -as [type])) {
@@ -369,10 +824,11 @@ try {
 $script:mutex = New-Object System.Threading.Mutex($false, 'Local\MAARemoteTray.Instance')
 $acquired = $false
 try { $acquired = $script:mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+if ($acquired) { $script:trayInstanceMutexAcquired = $true }
 if (-not $acquired) { exit 0 }
 
-# ---- 核心函数定义到本会话（GUI 同步路径用：开机自启勾选状态等）----
-Invoke-Expression $script:CoreSrc
+# ---- 记录托盘会话；退出原因由手动菜单或外层异常路径填写 ----
+Start-TraySession -Mode 'gui'
 
 # ---- 托盘常量与状态 ----
 $script:pollIntervalSec = 10    # 周期轮询间隔（限流红线要求 >=10 秒）
@@ -488,18 +944,69 @@ function Show-Balloon {
     try { $script:notify.ShowBalloonTip(3000, 'MAARemote', $msg, $type) } catch { }
 }
 
+function Register-TrayRuntimeFailure {
+    param([string]$Reason = 'runtime_exception', [string]$Message = '')
+    if ($script:runtimeFailureRecorded) { return }
+    $script:runtimeFailureRecorded = $true
+    $script:trayExitCode = 1
+    $script:trayExitReason = $Reason
+    [void](Write-TrayEvent -Event 'tray_runtime_failure' -Mode 'gui' -Reason $Reason -ExitCode 1 -Message $Message)
+    try { if ($script:timer) { $script:timer.Stop() } } catch { }
+    try { [System.Windows.Forms.Application]::Exit() } catch { }
+}
+
+function Close-TrayApplication {
+    param(
+        [Parameter(Mandatory)][string]$Reason,
+        [Parameter(Mandatory)][object]$ExitCode
+    )
+
+    $script:trayExitReason = $Reason
+    $script:trayExitCode = $ExitCode
+    try {
+        $script:timer.Stop()
+        if ($script:busyPs) {
+            try { $script:busyPs.Stop() } catch { }
+            try { $script:busyPs.Dispose() } catch { }
+            $script:busyPs = $null; $script:busyHandle = $null
+        }
+        $script:notify.Visible = $false
+        $script:notify.Dispose()
+        foreach ($k in @($script:iconCache.Keys)) {
+            [void][MAARemote.Native]::DestroyIcon($script:iconCache[$k].Handle)
+        }
+        $script:iconCache.Clear()
+        [System.Windows.Forms.Application]::Exit()
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message $_.Exception.Message
+    }
+}
+
 # ---- 主循环调度：单一 Timer（250ms）收割后台结果 + 发起新探测/动作 ----
 function Update-Tray {
+    try {
+    if ($script:trayExitEvent -and $script:trayExitEvent.WaitOne(0)) {
+        Close-TrayApplication -Reason 'active_stop' -ExitCode 0
+        return
+    }
     # 1) 收割已完成的后台 runspace
     if ($script:busyPs -and $script:busyHandle -and $script:busyHandle.IsCompleted) {
         $kind = $script:busyKind
         $result = $null
+        $runspaceErrors = @()
+        $endInvokeError = $null
         try {
             $out = $script:busyPs.EndInvoke($script:busyHandle)
+            $runspaceErrors = @($script:busyPs.Streams.Error)
             if ($out.Count -gt 0) { $result = $out[0] }
-        } catch { }
+        } catch { $endInvokeError = $_ }
         try { $script:busyPs.Dispose() } catch { }
         $script:busyPs = $null; $script:busyHandle = $null; $script:busyKind = ''
+        if ($endInvokeError) { throw $endInvokeError }
+        if ($runspaceErrors.Count -gt 0) {
+            $errorMessage = (($runspaceErrors | ForEach-Object { $_.ToString() }) -join '; ')
+            throw ("后台 runspace 非终止错误：{0}" -f $errorMessage)
+        }
         $script:lastProbeAt = Get-Date
         if ($kind -eq 'action') {
             $script:pendingAction = ''
@@ -526,6 +1033,9 @@ function Update-Tray {
     if (($script:forceRefresh -or $sinceLast -ge $script:pollIntervalSec) -and $sinceLast -ge $script:minProbeGapSec) {
         $script:forceRefresh = $false
         Start-TrayRunspace -Kind 'poll'
+    }
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message $_.Exception.Message
     }
 }
 
@@ -559,63 +1069,90 @@ $script:notify.ContextMenuStrip = $script:menu
 
 # ---- 事件绑定 ----
 $script:miStart.Add_Click({
-    if (-not $script:busyPs -and -not $script:pendingAction) { $script:pendingAction = 'start' }
+    try {
+        if (-not $script:busyPs -and -not $script:pendingAction) { $script:pendingAction = 'start' }
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message ("WinForms 点击回调异常：{0}" -f $_.Exception.Message)
+    }
 })
 $script:miStop.Add_Click({
-    if (-not $script:busyPs -and -not $script:pendingAction) { $script:pendingAction = 'stop' }
+    try {
+        if (-not $script:busyPs -and -not $script:pendingAction) { $script:pendingAction = 'stop' }
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message ("WinForms 点击回调异常：{0}" -f $_.Exception.Message)
+    }
 })
 $script:miRestart.Add_Click({
-    if (-not $script:busyPs -and -not $script:pendingAction) { $script:pendingAction = 'restart' }
+    try {
+        if (-not $script:busyPs -and -not $script:pendingAction) { $script:pendingAction = 'restart' }
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message ("WinForms 点击回调异常：{0}" -f $_.Exception.Message)
+    }
 })
 $script:miAutostart.Add_Click({
-    # 注册表读写毫秒级，同步执行即可；失败时按操作结果回滚勾选
-    if ($script:miAutostart.Checked) {
-        if (-not (Invoke-AutostartOn)) { $script:miAutostart.Checked = $false }
-    } else {
-        if (-not (Invoke-AutostartOff)) { $script:miAutostart.Checked = $true }
+    try {
+        # 注册表读写毫秒级，同步执行即可；失败时按操作结果回滚勾选
+        if ($script:miAutostart.Checked) {
+            if (-not (Invoke-AutostartOn)) { $script:miAutostart.Checked = $false }
+        } else {
+            if (-not (Invoke-AutostartOff)) { $script:miAutostart.Checked = $true }
+        }
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message ("WinForms 自启回调异常：{0}" -f $_.Exception.Message)
     }
 })
 $script:menu.Add_Opening({
-    # 菜单打开时刷新：注册表勾选状态同步核对；状态探测仍走后台（不卡菜单弹出）
-    if (-not $script:busyPs -and -not $script:pendingAction) {
-        $script:miAutostart.Checked = Test-AutostartEnabled
-        if (((Get-Date) - $script:lastProbeAt).TotalSeconds -ge 3) { $script:forceRefresh = $true }
+    try {
+        # 菜单打开时刷新：注册表勾选状态同步核对；状态探测仍走后台（不卡菜单弹出）
+        if (-not $script:busyPs -and -not $script:pendingAction) {
+            $script:miAutostart.Checked = Test-AutostartEnabled
+            if (((Get-Date) - $script:lastProbeAt).TotalSeconds -ge 3) { $script:forceRefresh = $true }
+        }
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message ("WinForms 菜单回调异常：{0}" -f $_.Exception.Message)
     }
 })
 $script:miExit.Add_Click({
-    # 仅关闭托盘，不停止服务（服务独立进程，MAA 轮询不中断）
     try {
-        $script:timer.Stop()
-        if ($script:busyPs) {
-            try { $script:busyPs.Stop() } catch { }
-            try { $script:busyPs.Dispose() } catch { }
-            $script:busyPs = $null; $script:busyHandle = $null
-        }
-        $script:notify.Visible = $false
-        $script:notify.Dispose()
-        foreach ($k in @($script:iconCache.Keys)) {
-            [void][MAARemote.Native]::DestroyIcon($script:iconCache[$k].Handle)
-        }
-        $script:iconCache.Clear()
-        try { $script:mutex.ReleaseMutex() } catch { }
-        $script:mutex.Dispose()
-    } catch { }
-    [System.Windows.Forms.Application]::Exit()
+        # 仅关闭托盘，不停止服务（服务独立进程，MAA 轮询不中断）
+        Close-TrayApplication -Reason 'manual' -ExitCode 0
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message ("WinForms 退出回调异常：{0}" -f $_.Exception.Message)
+    }
 })
 
 # ---- 状态轮询 Timer（250ms 调度一次；实际探测 10s 一次，见 Update-Tray）----
 $script:timer = New-Object System.Windows.Forms.Timer
 $script:timer.Interval = 250
-$script:timer.Add_Tick({ Update-Tray })
+$script:timer.Add_Tick({
+    try {
+        Update-Tray
+    } catch {
+        Register-TrayRuntimeFailure -Reason 'runtime_exception' -Message ("WinForms Timer 回调异常：{0}" -f $_.Exception.Message)
+    }
+})
 $script:timer.Start()
 
 # ---- 消息循环（退出后兜底清理）----
-try {
-    [System.Windows.Forms.Application]::Run()
+$script:trayMessageLoopStarted = $true
+[System.Windows.Forms.Application]::Run()
+} catch {
+    $script:trayExitCode = 1
+    $script:trayExitReason = if ($script:trayMessageLoopStarted) { 'runtime_exception' } else { 'initialization_exception' }
+    $message = $_.Exception.Message
+    Write-Host ("[托盘异常] {0}" -f $message)
+    if (-not $script:traySessionStartedAt) {
+        Write-TrayEvent -Event 'tray_start_failed' -Mode 'gui' -Reason $script:trayExitReason -ExitCode 1 -Message $message
+    }
 } finally {
     try { $script:timer.Stop() } catch { }
     try { $script:notify.Visible = $false; $script:notify.Dispose() } catch { }
+    if ($script:traySessionStartedAt -and -not $script:traySessionEnded) {
+        Complete-TraySession -Reason $script:trayExitReason -ExitCode $script:trayExitCode -Message $message
+    }
+    try { if ($script:trayExitEvent) { $script:trayExitEvent.Dispose() } } catch { }
+    # 最终状态先写入并以 session_id 校验成功，再释放单实例 Mutex；否则旧实例可能覆盖新实例状态。
     try { $script:mutex.ReleaseMutex() } catch { }
     try { $script:mutex.Dispose() } catch { }
 }
-exit 0
+exit $script:trayExitCode

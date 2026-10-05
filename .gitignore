@@ -11,6 +11,11 @@ server/config.*.json
 !server/config.example.json
 !server/config.sample.json
 
+# 依赖准备成功标记（项目局部派生文件）
+server/.maaremote-deps-state.json
+server/.maaremote-deps-state.json.*.tmp
+server/.maaremote-deps.lock
+
 # 数据库副本及事务文件（可能包含设备标识、任务与共享密钥）
 *.db
 *.db-*
@@ -78,3 +83,15 @@ reports/
 ## 构建缓存与进程文件
 .cache/
 *.pid
+
+# Wrangler 本地缓存
+**/.wrangler/
+
+# AI 协作计划文件（本地保留，不入库）
+docs/superpowers/
+
+# Cloudflare 本地部署配置（含真实域名，不入库）
+cloudflare/**/wrangler.local.jsonc
+
+# 本地保留的开发记录 / 案例（不入库）
+docs/p4b-webpush-success-cases.md

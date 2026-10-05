@@ -4,7 +4,7 @@
 # 用法（两种均支持，无需先手动 cd）：
 #   pwsh -NoProfile -File start.ps1
 #   pwsh -NoProfile -Command "& .\start.ps1"
-# 行为：定位 server\ 目录 → 前置检查 → 幂等 npm install → 端口占用检测 →
+# 行为：定位 server\ 目录 → 前置检查 → 端口占用检测 → 按需准备依赖 →
 #       前台启动 node src\index.js（Ctrl+C 交给 node 的优雅退出处理，无 wrapper）。
 # 端口：以 server/config.json 的 port 字段为准（非法/缺失回落默认 24325），
 #       首次运行时服务端会自动生成 config.json 与 server/data\maa.db。
@@ -37,15 +37,7 @@ try {
     }
     Write-Host "[环境] Node v$nodeVersion 检查通过。"
 
-    # ---- 3. 幂等安装依赖（重复运行不出错；已装好时 npm install 快速通过）----
-    Write-Host "[依赖] 正在执行 npm install --no-fund --no-audit ..."
-    npm install --no-fund --no-audit
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[启动失败] npm install 失败（退出码 $LASTEXITCODE），请检查网络或手动在 server\ 目录执行 npm install 排查。" -ForegroundColor Red
-        exit 1
-    }
-
-    # ---- 4. 计算服务端口（与 server/src/config.js 同规则：整数 1-65535，否则默认 24325）----
+    # ---- 3. 计算服务端口（与 server/src/config.js 同规则：整数 1-65535，否则默认 24325）----
     $port = 24325
     $configPath = Join-Path $serverDir 'config.json'
     if (Test-Path $configPath) {
@@ -59,7 +51,7 @@ try {
         }
     }
 
-    # ---- 5. 端口占用检测：被占用则提示并退出，绝不重复启动 ----
+    # ---- 4. 端口占用检测：被占用则提示并退出，绝不重复启动 ----
     $conns = $null
     try {
         $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
@@ -81,6 +73,19 @@ try {
             Write-Host "[提示] 该端口被其他程序占用（探测返回 HTTP $probeCode）。确认是残留的旧服务进程后，可用 Stop-Process -Id <PID> 结束再重试；否则请修改 server/config.json 的 port 换端口。" -ForegroundColor Yellow
         }
         exit 1
+    }
+
+    # ---- 5. 只在依赖缺失、清单变化或加载检查失败时准备依赖 ----
+    $dependencyScript = Join-Path $scriptDir 'prepare-dependencies.ps1'
+    if (-not (Test-Path -LiteralPath $dependencyScript -PathType Leaf)) {
+        Write-Host "[启动失败] 未找到依赖准备脚本 $dependencyScript。" -ForegroundColor Red
+        exit 66
+    }
+    & $dependencyScript -ServerDir $serverDir
+    $dependencyExitCode = $LASTEXITCODE
+    if ($dependencyExitCode -ne 0) {
+        Write-Host ("[启动失败] 依赖准备未完成（退出码 {0}），服务未启动。" -f $dependencyExitCode) -ForegroundColor Red
+        exit $dependencyExitCode
     }
 
     # ---- 6. 前台启动（不加 wrapper，保证 Ctrl+C 信号直达 node 触发优雅退出）----

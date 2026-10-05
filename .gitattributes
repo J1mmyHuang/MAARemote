@@ -1,0 +1,4 @@
+# 文本文件统一规范化；Windows 脚本固定 CRLF
+* text=auto
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
