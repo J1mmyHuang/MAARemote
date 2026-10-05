@@ -17,6 +17,16 @@ test('parseEventDetail 容错解析有效 JSON 与无效 detail', async (t) => {
   assert.equal(parseEventDetail(null), null);
 });
 
+test('formatTaskDuration 将任务级毫秒耗时格式化为中文时间', async (t) => {
+  const { formatTaskDuration } = await loadModel(t);
+
+  assert.equal(formatTaskDuration(0), '0 秒');
+  assert.equal(formatTaskDuration(15_000), '15 秒');
+  assert.equal(formatTaskDuration(65_000), '1 分 5 秒');
+  assert.equal(formatTaskDuration(null), '');
+  assert.equal(formatTaskDuration(-1), '');
+});
+
 test('mergeEvents 按真实 id 去重并将新事件置顶', async (t) => {
   const { mergeEvents } = await loadModel(t);
   const previous = [

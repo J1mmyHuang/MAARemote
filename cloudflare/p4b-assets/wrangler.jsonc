@@ -1,0 +1,27 @@
+{
+  "name": "maaremote-p4b-static-assets",
+  "compatibility_date": "2026-10-05",
+  "main": "./src/index.js",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/sw.js",
+      "/manifest.webmanifest"
+    ]
+  },
+  "routes": [
+    {
+      "pattern": "maa.example.com/sw.js",
+      "zone_name": "example.com"
+    },
+    {
+      "pattern": "maa.example.com/manifest.webmanifest",
+      "zone_name": "example.com"
+    },
+    {
+      "pattern": "maa.example.com/icons/*",
+      "zone_name": "example.com"
+    }
+  ]
+}

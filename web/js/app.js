@@ -2,6 +2,7 @@ import { ApiClient, ApiClientError, mapApiError } from './api.js?v=20260923-foll
 import {
   canQueueAgainWhileInFlight,
   clearPendingConfirmationTasks,
+  formatTaskDuration,
   hasObservedCurrentTask,
   isActionControlDisabled,
   isLongRunningCommandType,
@@ -17,6 +18,14 @@ import {
 } from './model.js?v=20260923-followup2';
 import { renderInFlightSheetHtml, renderQuickActionWrapHtml, renderStuckClearButtonHtml } from './action-ui.js?v=20260923-followup2';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
+import {
+  NOTIFY_BANNER_DISMISSED_KEY,
+  PUSH_ENABLED_KEY,
+  createTaskNotifier,
+  enableBackgroundPush,
+  syncExistingPushSubscription,
+  syncPushSubscription,
+} from './notify.js?v=20261005-p4b-dedup';
 import {
   captureSheetContext,
   clampSheetOffset,
@@ -58,6 +67,18 @@ TASK_BY_TYPE.set('Settings-Stage1', { type: 'Settings-Stage1', label: '第一关
 
 const app = document.querySelector('#app');
 const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+
+function pickStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return { getItem: () => null, setItem() {}, removeItem() {} };
+  }
+}
+
+// 任务完成通知：只消费 task_finished；overview 首次应用后才开始处理，之前的 SSE 回放不参与。
+const notifier = createTaskNotifier({ storage: pickStorage(), label: (type) => taskLabel(type) });
+let notifyReady = false;
 
 let api = new ApiClient(readStoredValue(TOKEN_STORAGE_KEY));
 let sessionEpoch = 0;
@@ -106,6 +127,12 @@ const state = {
   actionInProgress: new Set(),
   sheet: null,
   toast: null,
+  notifyPermission: notifier.permission(),
+  notifyBannerDismissed: readStoredValue(NOTIFY_BANNER_DISMISSED_KEY) === '1',
+  notifyRequesting: false,
+  pushEnabled: readStoredValue(PUSH_ENABLED_KEY) === '1',
+  pushRequesting: false,
+  pushError: '',
 };
 
 function readStoredValue(key) {
@@ -406,6 +433,16 @@ function eventText(event) {
   return event?.kind || '收到新事件';
 }
 
+function eventMetaText(event) {
+  const detail = parseEventDetail(event?.detail) ?? {};
+  const parts = [formatTime(event.created_at), event.device || '未知设备'];
+  if (event?.kind === 'task_finished') {
+    const duration = formatTaskDuration(detail.duration_ms);
+    if (duration) parts.push(`耗时 ${duration}`);
+  }
+  return parts.join(' · ');
+}
+
 function eventClass(event) {
   const detail = parseEventDetail(event?.detail) ?? {};
   const suffix = event?.kind === 'task_finished' ? (detail.status === 'success' ? ' is-success' : ' is-failed') : '';
@@ -478,6 +515,73 @@ function setToast(message, tone = 'default') {
   }, 4500);
 }
 
+function renderNotifyBanner() {
+  if (state.auth !== 'authorized' || state.notifyPermission !== 'default' || state.notifyBannerDismissed) return '';
+  return `<div class="notice-banner" role="region" aria-label="任务完成通知"><span>开启通知，任务成功或失败时提醒你</span><span class="notice-actions"><button class="text-button" type="button" data-action="notify-enable" data-focus-id="notify-banner-enable">开启</button><button class="text-button" type="button" data-action="notify-dismiss" data-focus-id="notify-banner-dismiss">不再提示</button></span></div>`;
+}
+
+function notifySettingInfo() {
+  const permission = state.notifyPermission;
+  if (permission === 'unsupported') return { detail: notifier.unsupportedReason(), action: '', label: '不可用' };
+  if (permission === 'denied') return { detail: '已被浏览器拒绝。请在浏览器站点设置中允许通知后返回本页。', action: '', label: '已拒绝' };
+  if (permission === 'default') return { detail: '未开启。点击后浏览器会询问是否允许通知。', action: 'notify-enable', label: '开启' };
+  return notifier.isEnabled()
+    ? { detail: '已开启。任务成功或失败时提醒，点击暂停。', action: 'notify-toggle', label: '已开启' }
+    : { detail: '已暂停。点击恢复提醒。', action: 'notify-toggle', label: '已暂停' };
+}
+
+function renderNotifySettingRow() {
+  const info = notifySettingInfo();
+  const action = info.action ? ` data-action="${info.action}"` : ' disabled aria-disabled="true"';
+  return `<button class="sheet-menu-button notify-menu-row" type="button"${action} data-focus-id="settings-notify"><span><span class="sheet-menu-title">任务完成通知</span><span class="sheet-menu-detail">${escapeHtml(info.detail)}</span></span><span class="sheet-menu-state">${escapeHtml(info.label)}</span></button>`;
+}
+
+function renderPushSettingRow() {
+  const action = state.pushRequesting ? ' disabled aria-disabled="true"' : ' data-action="push-enable"';
+  const detail = state.pushError
+    || (state.pushEnabled ? '已登记。主屏幕 App 关闭后，任务完成时提醒。点击重新同步。' : '主屏幕 App 关闭后也能收到任务完成提醒。点击开启。');
+  const label = state.pushRequesting ? '处理中' : state.pushEnabled ? '已开启' : '开启';
+  return `<button class="sheet-menu-button notify-menu-row push-menu-row" type="button"${action} data-focus-id="settings-push"><span><span class="sheet-menu-title">开启后台推送</span><span class="sheet-menu-detail">${escapeHtml(detail)}</span></span><span class="sheet-menu-state">${escapeHtml(label)}</span></button>`;
+}
+
+async function enableNotifications() {
+  if (state.notifyRequesting) return;
+  state.notifyRequesting = true;
+  // 必须由点击直接进入：request() 在首个 await 之前就调用 Notification.requestPermission()。
+  const result = await notifier.request();
+  state.notifyRequesting = false;
+  state.notifyPermission = notifier.permission();
+  if (result === 'granted') {
+    notifier.setEnabled(true);
+    setToast('任务完成通知已开启。', 'success');
+  } else if (result === 'denied') {
+    setToast('浏览器已拒绝通知，可在站点设置中重新允许。', 'error');
+  } else if (result === 'unsupported') {
+    setToast(notifier.unsupportedReason(), 'error');
+  } else {
+    setToast('尚未允许通知，可稍后再开启。');
+  }
+  render();
+}
+
+async function enableBackgroundNotifications() {
+  if (state.pushRequesting || !state.token || state.auth === 'invalid') return;
+  state.pushRequesting = true;
+  state.pushError = '';
+  render();
+  const result = await enableBackgroundPush({ api, env: window, storage: pickStorage() });
+  state.pushRequesting = false;
+  if (result.ok) {
+    state.pushEnabled = true;
+    writeStoredValue(PUSH_ENABLED_KEY, '1');
+    setToast('后台推送已开启。', 'success');
+  } else {
+    state.pushError = result.message || '后台推送开启失败。';
+    setToast(state.pushError, 'error');
+  }
+  render();
+}
+
 function renderHeader() {
   const pendingCount = pendingIsReady() ? state.pendingDevices.length : 0;
   return `
@@ -496,6 +600,7 @@ function renderHeader() {
       </div>
     </header>
     ${pendingCount > 0 ? `<div class="notice-banner notice-warning"><span>有 ${pendingCount} 台设备等待人工批准</span><button class="text-button" type="button" data-action="navigate" data-route="pending" data-focus-id="open-pending">查看</button></div>` : ''}
+    ${renderNotifyBanner()}
   `;
 }
 
@@ -640,7 +745,7 @@ function renderEvents(limit = 6) {
       <span class="event-marker" aria-hidden="true"></span>
       <div>
         <div class="event-title">${escapeHtml(eventText(event))}</div>
-        <div class="event-meta">${escapeHtml(formatTime(event.created_at))} · ${escapeHtml(event.device || '未知设备')}</div>
+        <div class="event-meta">${escapeHtml(eventMetaText(event))}</div>
       </div>
     </li>
   `).join('');
@@ -838,6 +943,8 @@ function renderSettingsSheet() {
   return `
     <div class="sheet-heading"><div><h2 class="sheet-title">设置与工具</h2><p class="sheet-caption">需要确认的操作会再次提示后果</p></div></div>
     <div class="sheet-menu">
+      ${renderNotifySettingRow()}
+      ${renderPushSettingRow()}
       <button class="sheet-menu-button" type="button" data-action="open-token" data-focus-id="settings-token"><span><span class="sheet-menu-title">Token 设置</span><span class="sheet-menu-detail">修改或重新验证访问 Token</span></span><span class="sheet-menu-arrow" aria-hidden="true">›</span></button>
       <button class="sheet-menu-button" type="button" data-action="open-setting" data-setting="Settings-ConnectAddress" data-focus-id="settings-address"><span><span class="sheet-menu-title">连接地址</span><span class="sheet-menu-detail">排队更新 MAA 连接地址</span></span><span class="sheet-menu-arrow" aria-hidden="true">›</span></button>
       <button class="sheet-menu-button" type="button" data-action="open-setting" data-setting="Settings-Stage1" data-focus-id="settings-stage"><span><span class="sheet-menu-title">第一关卡</span><span class="sheet-menu-detail">替换为单关卡计划</span></span><span class="sheet-menu-arrow" aria-hidden="true">›</span></button>
@@ -1120,6 +1227,7 @@ function stopPolling() {
 // 凭据变更是异步边界：取消网络请求，并阻止已排队的旧回调回填状态。
 function invalidateSession() {
   sessionEpoch += 1;
+  notifyReady = false;
   sessionController.abort();
   sessionController = new AbortController();
   stopEventStream();
@@ -1143,6 +1251,7 @@ function clearPrivateState() {
   state.selectedDevice = '';
   state.selectedScreenshotId = null;
   state.events = [];
+  notifier.reset();
   state.missingScreenshotIds.clear();
   state.stopIdleObservedAt.clear();
   state.stopVerificationInFlight.clear();
@@ -1203,6 +1312,9 @@ function applyOverview(payload) {
   if (!payload || !Array.isArray(payload.devices)) return false;
   state.overview = payload;
   mergeOverviewEvents(Array.isArray(payload.events) ? payload.events : []);
+  notifyReady = true;
+  notifier.syncClock(payload.now);
+  runNotifier(Array.isArray(payload.events) ? payload.events : []);
   reconcileSelectedDevice();
   state.overviewStatus = 'ready';
   state.overviewError = '';
@@ -1350,9 +1462,26 @@ function scheduleEventRefresh() {
   }, EVENT_REFRESH_DELAY_MS);
 }
 
+function runNotifier(events) {
+  if (!state.token || state.auth === 'invalid') return;
+  try {
+    notifier.process(events).catch(() => {});
+  } catch {
+    // 通知失败不得影响仪表盘同步。
+  }
+}
+
+function refreshNotifyPermission() {
+  const next = notifier.permission();
+  if (next === state.notifyPermission) return;
+  state.notifyPermission = next;
+  render();
+}
+
 function ingestEvent(event) {
   if (!event || event.id === undefined || event.id === null) return;
   state.events = mergeEvents(state.events, event).slice(0, MAX_EVENTS);
+  if (notifyReady) runNotifier([event]);
   const detail = parseEventDetail(event.detail) ?? {};
   if (event.kind === 'screenshot_saved' && detail.screenshot_id) {
     state.missingScreenshotIds.delete(String(detail.screenshot_id));
@@ -1513,6 +1642,9 @@ async function validateToken(token) {
     startPolling();
     const connected = await refreshSnapshots({ includePending: true, quiet: false });
     if (epoch !== sessionEpoch || !connected) return;
+    if (state.pushEnabled && state.notifyPermission === 'granted') {
+      syncExistingPushSubscription({ api, env: window, storage: pickStorage() }).catch(() => {});
+    }
     setToast('Token 已验证，开始同步。', 'success');
     render();
   } catch (error) {
@@ -1730,6 +1862,27 @@ async function handleAction(target) {
     navigate(target.dataset.route);
     return;
   }
+  if (action === 'notify-enable') {
+    await enableNotifications();
+    return;
+  }
+  if (action === 'notify-dismiss') {
+    state.notifyBannerDismissed = true;
+    writeStoredValue(NOTIFY_BANNER_DISMISSED_KEY, '1');
+    render();
+    return;
+  }
+  if (action === 'notify-toggle') {
+    const next = !notifier.isEnabled();
+    notifier.setEnabled(next);
+    setToast(next ? '任务完成通知已恢复。' : '任务完成通知已暂停。');
+    render();
+    return;
+  }
+  if (action === 'push-enable') {
+    await enableBackgroundNotifications();
+    return;
+  }
   if (action === 'open-theme') {
     openSheet({ kind: 'theme', title: '主题' }, target);
     return;
@@ -1912,6 +2065,7 @@ function bindInteractions() {
   app.addEventListener('pointercancel', (event) => finishSheetDrag(event, true));
   document.addEventListener('keydown', onDocumentKeydown);
   document.addEventListener('visibilitychange', () => {
+    refreshNotifyPermission();
     if (document.visibilityState === 'visible' && state.auth === 'authorized') {
       refreshSnapshots({ includePending: true, quiet: true }).catch(() => {});
     }
@@ -1927,9 +2081,20 @@ function bindInteractions() {
   window.addEventListener('storage', (event) => {
     if ((event.key === TOKEN_STORAGE_KEY || event.key === null) && event.newValue === null) clearToken();
   });
+  window.navigator.serviceWorker?.addEventListener?.('message', (event) => {
+    if (event.data?.type !== 'maaremote-push-subscription-change' || !state.token) return;
+    syncPushSubscription({ api, subscription: event.data.subscription, storage: pickStorage() })
+      .then(() => { state.pushEnabled = true; state.pushError = ''; render(); })
+      .catch(() => { state.pushError = '后台推送订阅已变化，请在设置与工具中重新同步。'; render(); });
+  });
 }
 
 bindInteractions();
+if (state.notifyPermission === 'granted') notifier.registerWorker().catch(() => {});
+notifier.watchPermission(() => refreshNotifyPermission());
+if (state.pushEnabled && state.notifyPermission === 'granted' && state.token) {
+  syncExistingPushSubscription({ api, env: window, storage: pickStorage() }).catch(() => {});
+}
 applyTheme(state.themePreference, { mediaQuery: colorScheme });
 // 兼容旧版本清除凭据后遗留的任务缓存，首次绘制前恢复隐私边界。
 if (!state.token) clearPrivateState();

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="MAA Remote">
+  <rect width="192" height="192" rx="42" fill="#172033"/>
+  <path d="M45 137V55h22l29 38 29-38h22v82h-21V88l-30 38h-1L66 88v49z" fill="#f7f8fa"/>
+  <circle cx="151" cy="43" r="13" fill="#4f8cff"/>
+</svg>

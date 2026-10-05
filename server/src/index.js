@@ -6,13 +6,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
-import { loadOrCreateConfig, SCREENSHOT_DIR } from './config.js';
+import { DATA_DIR, loadOrCreateConfig, SCREENSHOT_DIR } from './config.js';
 import { openDb } from './db.js';
 import { createEventBus, recordAndPublishEvent } from './eventbus.js';
 import maaRoutes from './routes/maa.js';
 import apiRoutes from './routes/api.js';
 import { startSchedulers } from './scheduler.js';
 import staticWeb from './static-web.js';
+import { createPushService } from './push.js';
 
 // 1. 配置：首次运行自动生成 server/config.json（含随机 token）
 const config = loadOrCreateConfig();
@@ -52,10 +53,21 @@ const fastify = Fastify({
   bodyLimit: 100 * 1024 * 1024,
 });
 
+// P4b：事件已入库并广播后异步投递 Web Push；投递异常不得影响事件主链。
+const pushService = createPushService({
+  storagePath: path.join(DATA_DIR, 'push.json'),
+  logger: fastify.log,
+});
+bus.on('event', (event) => {
+  pushService.handleEvent(event).catch(() => {
+    fastify.log.warn('Web Push 异步投递出现未分类异常，已忽略');
+  });
+});
+
 // /maa/*：MAA 协议端点（匿名可达，按协议红线自行校验 user/device）
 await fastify.register(maaRoutes, { config, db, recordEvent });
 // /api/*：仪表盘 API（插件内部注册 dashboardToken 鉴权钩子，仅作用于该前缀）
-await fastify.register(apiRoutes, { prefix: '/api', config, db, bus });
+await fastify.register(apiRoutes, { prefix: '/api', config, db, bus, pushService });
 // 仪表盘前端：与 API/MAA 同源；插件会保留这两个前缀的既有路由语义。
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web');
 await fastify.register(staticWeb, { webRoot });
@@ -67,6 +79,7 @@ const stopSchedulers = startSchedulers({ config, db, bus, log: fastify.log, reco
 async function shutdown() {
   try {
     stopSchedulers();
+    await pushService.close();
     await fastify.close();
     db.close();
   } finally {

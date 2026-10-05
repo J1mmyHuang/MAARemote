@@ -17,6 +17,18 @@ export function parseEventDetail(detail) {
   }
 }
 
+/** 将服务端记录的任务级毫秒耗时格式化为时间线可读文本。 */
+export function formatTaskDuration(durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return '';
+
+  const totalSeconds = Math.round(durationMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes} 分钟` : `${minutes} 分 ${seconds} 秒`;
+}
+
 function compareDescendingId(left, right) {
   const leftText = String(left ?? '');
   const rightText = String(right ?? '');

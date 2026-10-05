@@ -1141,3 +1141,36 @@ a:focus-visible {
     transition-duration: .01ms !important;
   }
 }
+
+.notice-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.notice-actions .text-button {
+  min-height: 44px;
+  padding: 6px 10px;
+}
+
+.sheet-menu-state {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sheet-menu-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
+.notify-menu-row .sheet-menu-title,
+.notify-menu-row .sheet-menu-detail {
+  display: block;
+}
+
+.notify-menu-row .sheet-menu-state {
+  align-self: center;
+  padding-left: 12px;
+}

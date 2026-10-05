@@ -22,6 +22,7 @@ async function buildApp(t) {
   await fs.writeFile(path.join(webRoot, 'index.html'), '<!doctype html><title>MAARemote</title>');
   await fs.writeFile(path.join(webRoot, 'app.js'), 'export const ready = true;');
   await fs.writeFile(path.join(webRoot, 'app.css'), 'body { color: black; }');
+  await fs.writeFile(path.join(webRoot, 'manifest.webmanifest'), '{"display":"standalone"}');
   const app = Fastify();
   await app.register(staticWeb, { webRoot });
   t.after(async () => {
@@ -52,6 +53,13 @@ test('静态插件为 JavaScript 与 CSS 返回正确 MIME 类型', async (t) =>
   assert.match(js.headers['content-type'], /^application\/javascript/);
   assert.equal(css.statusCode, 200);
   assert.match(css.headers['content-type'], /^text\/css/);
+});
+
+test('静态插件为 manifest.webmanifest 返回 Web App Manifest MIME 类型', async (t) => {
+  const app = await buildApp(t);
+  const manifest = await app.inject({ method: 'GET', url: '/manifest.webmanifest' });
+  assert.equal(manifest.statusCode, 200);
+  assert.match(manifest.headers['content-type'], /^application\/manifest\+json/);
 });
 
 test('静态插件不会以 SPA fallback 截获 API 或 MAA 路径', async (t) => {

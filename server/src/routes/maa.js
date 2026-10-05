@@ -6,7 +6,8 @@
 // 4. user 不匹配 → 403；
 // 5. user 匹配但 device 未知 → 401 并登记（approved=0）；每次合法 getTask 刷新 last_seen。
 // 事件纪律（M3）：HeartBeat 任务完全不写任何事件；CaptureImageNow 不写 task_started/task_finished，
-// 改为保存成功后写一条 screenshot_saved；其余类型任务事件行为不变（M2 契约）。
+// 改为保存成功后写一条 screenshot_saved；其余类型任务写 task_started/task_finished，
+// task_finished.detail.duration_ms 为从任务入队到首次有效回报的任务级耗时。
 // 安全修复轮（Mr-sec1）：
 // [中B] getTask 路由单独 bodyLimit 64KB（合法请求体仅几十字节），reportStatus 保持实例级 100MB；
 //       本插件 setErrorHandler 保证 /maa/* 框架级错误（413 大包、400 坏 JSON 等）响应体也带
@@ -71,6 +72,11 @@ const SQL_MARK_TASK_RUNNING =
 const SQL_SCREENSHOTS_EXCESS =
   'SELECT id, path FROM screenshots WHERE device_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?';
 const SQL_DELETE_SCREENSHOT_BY_ID = 'DELETE FROM screenshots WHERE id = ?';
+
+function taskDurationMs(taskRow, finishedAt) {
+  if (!Number.isFinite(taskRow.created_at)) return null;
+  return Math.max(0, finishedAt - taskRow.created_at);
+}
 
 /** MAA 协议端点路由插件。opts: { config, db, recordEvent }（recordEvent 由入口注入：入库 + 广播一次完成） */
 export default async function maaRoutes(fastify, opts) {
@@ -324,7 +330,7 @@ export default async function maaRoutes(fastify, opts) {
       return { ok: true };
     }
 
-    // ---- 其他任务：终结 + task_finished（M2 契约不变）----
+    // ---- 其他任务：终结 + task_finished（含任务级耗时）----
     // [低3] 终结 UPDATE 带状态条件；changes()>0（首次转换）才写 task_finished，重复回报不重复写事件
     const finishInfo = db.prepare(SQL_FINISH_TASK).run(finalStatus, now, null, taskRow.id);
     if (finishInfo.changes > 0) {
@@ -332,7 +338,12 @@ export default async function maaRoutes(fastify, opts) {
       recordEvent({
         deviceId: taskRow.device_id,
         kind: 'task_finished',
-        detail: { task_id: taskRow.id, type: taskRow.type, status: finalStatus },
+        detail: {
+          task_id: taskRow.id,
+          type: taskRow.type,
+          status: finalStatus,
+          duration_ms: taskDurationMs(taskRow, now),
+        },
         createdAt: now,
       });
     } else {

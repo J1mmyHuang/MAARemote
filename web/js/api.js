@@ -284,6 +284,13 @@ export class ApiClient {
   getScreenshots(limit = 50, options) { return this.request(`/api/screenshots?limit=${encodeURIComponent(limit)}`, options); }
   getPendingDevices(options) { return this.request('/api/devices/pending', options); }
   approveDevice(id, options) { return this.request(`/api/devices/${encodeURIComponent(id)}/approve`, { ...options, method: 'POST' }); }
+  getPushVapidPublicKey(options) { return this.request('/api/push/vapid-public-key', options); }
+  savePushSubscription(subscription, options) {
+    return this.request('/api/push/subscriptions', { ...options, method: 'POST', body: subscription });
+  }
+  deletePushSubscription(endpoint, options) {
+    return this.request('/api/push/subscriptions', { ...options, method: 'DELETE', body: { endpoint } });
+  }
 
   getScreenshotBlob(id, options = {}) {
     return this.fetchRequest(`/api/screenshots/${encodeURIComponent(id)}`, {

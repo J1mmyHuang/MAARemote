@@ -7,6 +7,9 @@
 //   GET  /api/screenshots/:id         截图文件本体（M3，image/png 流式下发）
 //   GET  /api/devices/pending         待批准设备列表（M4 首次绑定流程）
 //   POST /api/devices/:id/approve     批准设备（M4，幂等；写 device_approved 事件）
+//   GET  /api/push/vapid-public-key    Web Push VAPID 公钥
+//   POST /api/push/subscriptions      注册或更新 Web Push 订阅
+//   DELETE /api/push/subscriptions    删除 Web Push 订阅
 // 鉴权：本插件内部注册 onRequest 钩子（Fastify 封装上下文隔离，只作用于 /api/*，
 // 不影响匿名可达的 /maa/* 协议端点），无 token 或错 token → 401。
 // ?token= 查询参数全程可用（浏览器 <img> 标签无法自定义 header 的场景）。
@@ -106,7 +109,7 @@ function linkStartBlocked(db, devRow, type) {
 
 /** 仪表盘 API 路由插件。opts: { config, db, bus } */
 export default async function apiRoutes(fastify, opts) {
-  const { config, db, bus } = opts;
+  const { config, db, bus, pushService } = opts;
 
   // 私密 JSON、截图及鉴权错误均不得进入浏览器或代理缓存。
   fastify.addHook('onRequest', async (_request, reply) => {
@@ -128,6 +131,30 @@ export default async function apiRoutes(fastify, opts) {
   fastify.addHook('onRequest', buildDashboardAuth(config, {
     onAuthFailure: (request) => apiAuthFailLimiter.hit(request.ip),
   }));
+
+  // P4b Web Push：订阅信息是私密凭据，沿用 dashboardToken 鉴权；不写入 SQLite。
+  fastify.get('/push/vapid-public-key', async (_request, reply) => {
+    if (!pushService) return reply.code(503).send({ error: 'push_unavailable' });
+    return { publicKey: pushService.getVapidPublicKey() };
+  });
+
+  fastify.post('/push/subscriptions', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    if (!pushService) return reply.code(503).send({ error: 'push_unavailable' });
+    try {
+      return await pushService.addSubscription(request.body ?? {});
+    } catch {
+      return reply.code(400).send({ error: 'invalid_push_subscription' });
+    }
+  });
+
+  fastify.delete('/push/subscriptions', { bodyLimit: 4 * 1024 }, async (request, reply) => {
+    if (!pushService) return reply.code(503).send({ error: 'push_unavailable' });
+    try {
+      return await pushService.removeSubscription(request.body ?? {});
+    } catch {
+      return reply.code(400).send({ error: 'invalid_push_subscription' });
+    }
+  });
 
   // 设备在线状态 + 最近事件（前端状态卡与时间线的数据源）
   fastify.get('/overview', async () => {

@@ -73,12 +73,16 @@ test('正常截图回报保存 PNG，重复回报不会覆写文件或重复发�
 
 test('正常回报仍可终结任务，重复回报保持幂等', async (t) => {
   const { app, db, events, devices } = await fixture(t);
-  db.prepare("INSERT INTO tasks (id, device_id, type, status) VALUES (?, ?, 'LinkStart', 'queued')").run('own-task', devices[0].id);
+  db.prepare("INSERT INTO tasks (id, device_id, type, status, created_at) VALUES (?, ?, 'LinkStart', 'queued', ?)").run('own-task', devices[0].id, Date.now() - 15_000);
   const polling = { method: 'POST', url: '/maa/getTask', payload: { user: config.maaUserToken, device: devices[0].device } };
   assert.deepEqual((await app.inject(polling)).json(), (await app.inject(polling)).json());
   const report = { method: 'POST', url: '/maa/reportStatus', payload: { ...polling.payload, task: 'own-task', status: 'SUCCESS' } };
   assert.equal((await app.inject(report)).json().ok, true);
   const eventCount = events.length;
+  const finishEvent = events.at(-1);
+  assert.equal(finishEvent.kind, 'task_finished');
+  assert.ok(Number.isInteger(finishEvent.detail.duration_ms));
+  assert.ok(finishEvent.detail.duration_ms >= 15_000);
   assert.equal((await app.inject(report)).json().ok, true);
   assert.equal(events.length, eventCount);
   assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get('own-task').status, 'success');
@@ -106,7 +110,7 @@ test('普通任务的多余 payload 不进入任务记录或事件，解析预�
     db.prepare("INSERT INTO tasks (id, device_id, type, status) VALUES (?, ?, ?, 'dispatched')").run(taskId, devices[0].id, type);
     const result = await app.inject({ method: 'POST', url: '/maa/reportStatus', payload: { user: config.maaUserToken, device: devices[0].device, task: taskId, status: 'SUCCESS', payload: unusedPayload } });
     assert.equal(result.statusCode, 200);
-    assert.deepEqual(events.at(-1).detail, { task_id: taskId, type, status: 'success' });
+    assert.deepEqual(events.at(-1).detail, { task_id: taskId, type, status: 'success', duration_ms: null });
     const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
     assert.equal(row.payload_path, null);
     assert.ok(!JSON.stringify(row).includes(unusedPayload));
