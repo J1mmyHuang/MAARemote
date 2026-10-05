@@ -166,6 +166,7 @@ prepare-dependencies.ps1
 *.cmd             双击入口：启动 / 打开托盘 / 停止 / 安装托盘守护
 cloudflare/p4b-assets/
                   可选：边缘 Worker，用于 Access 保护下的 iPhone 后台推送
+SECURITY.md       安全政策与漏洞报告方式
 DEPLOY.md         部署指南（Cloudflare Tunnel / 分层常驻方案 / MAA 接入 / 故障排查）
 server/           后端（Node.js + Fastify + SQLite）
   src/            入口、路由、调度器
@@ -174,19 +175,39 @@ server/           后端（Node.js + Fastify + SQLite）
 deploy/           cloudflared 隧道配置示例
 web/              前端（AGPL-3.0-or-later）
 实现报告.md        方案设计权威文档
-LICENSE           后端 MPL-2.0
+LICENSE           MPL-2.0（除 web/ 外的全部内容）
 web/LICENSE       前端 AGPL-3.0-or-later
 ```
 
 ## 致谢
 
-- [MaaAssistantArknights](https://github.com/MaaAssistantArknights/MaaAssistantArknights) —— MAA 桌面端及其公开的远程控制协议，本项目因它而生；
-- [GLM-5.3 家族（Z.ai）](https://z.ai) —— 本项目的方案研究与全部代码实现由 GLM-5.3 / GLM-5.3-Flash 与作者协作完成。
+- [MaaAssistantArknights](https://github.com/MaaAssistantArknights/MaaAssistantArknights) —— MAA 桌面端及其公开的远程控制协议，本项目因它而生。
 - [Home Assistant Demo Dashboard](https://demo.home-assistant.io/#/lovelace/home) —— 仪表盘信息架构与卡片式家庭自动化控制界面提供了 UI 设计参考。
-- [OpenAI](https://openai.com/) —— GPT-5.6 家族与 GPT-6 Astra 参与了本项目的研究、实现与文档整理。
+
+本项目的所有点子、需求和取舍，都出自作者本人的大脑：原装人脑一颗，未经任何 AI 参与构思，保修期未知。
+
+问题是作者完全不会编程。于是「把想法变成代码」这件苦差事，被全权外包给了下面这些 AI。想法归人，代码归 AI，Bug 的锅双方协商。
+
+分工如下：
+
+| 模型 | 负责的部分 |
+|---|---|
+| [GLM-5.3 家族（Z.ai）](https://z.ai) | 后端（仅后端）；技术调研与文档整理 |
+| [GPT-5.6 家族与 GPT-6 家族（OpenAI）](https://openai.com/) | 部分前端，以及少部分后端；技术调研与文档整理 |
+| [Claude Sonnet 5.5（Anthropic）](https://www.anthropic.com/) | 最后的审核，以及少部分前端 |
+| [Cursor Agent](https://cursor.com/) | 长任务卡死修复、离线排查提示与静态页兜底等若干修复，涉及少量前后端 |
 
 ## 许可证
 
-- `server/` 后端代码采用 [MPL-2.0](LICENSE)。
-- `web/` 前端代码采用 [GNU AGPL-3.0-or-later](web/LICENSE)。
-- 本项目是 MAA 官方远程控制协议的独立实现，未复制或链接 MAA 代码；MAA 及其商标归其各自权利人所有。
+本仓库按目录分别授权，两个许可证不是对同一份代码的联合许可：
+
+| 范围 | 许可证 | 文本 |
+|---|---|---|
+| web/ 前端，以及与其内容一致的 cloudflare/p4b-assets/public/ 四个静态文件 | GNU AGPL-3.0-or-later | [web/LICENSE](web/LICENSE) |
+| 其余全部内容：server/ 后端、启动与托盘脚本、*.cmd、cloudflare/p4b-assets/ 的 Worker 代码、deploy/、文档 | MPL-2.0 | [LICENSE](LICENSE) |
+
+根目录 LICENSE 是 MPL-2.0 官方原文，所以 GitHub 会把仓库识别为 MPL-2.0；前端部分以 web/LICENSE 为准。
+
+本项目是 MAA 官方远程控制协议的独立实现，未复制或链接 MAA 代码；MAA 及其商标归其各自权利人所有。
+
+安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。

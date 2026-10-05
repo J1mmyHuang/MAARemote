@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "MAA 桌面端远程监控 WebApp 后端：实现 MAA 官方远程控制协议（getTask / reportStatus）",
   "private": true,
+  "license": "MPL-2.0",
   "type": "module",
   "main": "src/index.js",
   "engines": {
