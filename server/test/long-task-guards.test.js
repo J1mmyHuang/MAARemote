@@ -130,3 +130,29 @@ test('HeartBeat 观测长任务会刷新 dispatched_at，回收器不再按首�
   assert.equal(recycled, 0);
   assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(jobId).status, 'running');
 });
+
+test('GET /api/tasks?ids= 带回已被 HeartBeat 挤出最近列表的任务终态', async (t) => {
+  const { app, db, device, headers } = await fixture(t);
+  const insert = db.prepare('INSERT INTO tasks (id, device_id, type, params, status, created_at, dispatched_at, finished_at, payload_path) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL)');
+  const base = Date.now() - 3_600_000;
+  insert.run('old-linkstart', device.id, 'LinkStart', 'success', base, base, base + 1000);
+  for (let i = 1; i <= 60; i += 1) insert.run(`hb-${i}`, device.id, 'HeartBeat', 'success', base + i * 30_000, null, null);
+
+  const recentOnly = await app.inject({ method: 'GET', url: '/api/tasks?limit=50', headers });
+  assert.equal(recentOnly.statusCode, 200);
+  assert.ok(!recentOnly.json().tasks.some((task) => task.id === 'old-linkstart'));
+
+  const withIds = await app.inject({ method: 'GET', url: '/api/tasks?limit=50&ids=old-linkstart,hb-60,unknown-id', headers });
+  assert.equal(withIds.statusCode, 200);
+  const body = withIds.json();
+  assert.equal(body.tasks.filter((task) => task.id === 'hb-60').length, 1);
+  assert.equal(body.tasks.find((task) => task.id === 'old-linkstart')?.status, 'success');
+  assert.equal(body.tasks.find((task) => task.id === 'old-linkstart')?.device, device.device);
+  assert.equal(body.count, 51);
+
+  const bad = await app.inject({ method: 'GET', url: "/api/tasks?ids=a'%20OR%201=1", headers });
+  assert.equal(bad.statusCode, 400);
+  assert.deepEqual(bad.json(), { error: 'bad_ids' });
+  const tooMany = await app.inject({ method: 'GET', url: `/api/tasks?ids=${Array.from({ length: 61 }, (_, i) => `x${i}`).join(',')}`, headers });
+  assert.equal(tooMany.statusCode, 400);
+});

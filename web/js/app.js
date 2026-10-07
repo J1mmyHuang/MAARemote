@@ -1404,7 +1404,11 @@ async function refreshSnapshots({ includePending = false, quiet = false } = {}) 
   const options = { signal: sessionController.signal };
   const requests = [
     api.getOverview(options),
-    api.getTasks(50, options),
+    // 本地在途任务一并按 id 补查，防止它被 HeartBeat 挤出最近 50 条后永远停在「进行中」
+    api.getTasks(50, options, state.tasks
+      .filter((task) => isInFlight(task) && !isPendingConfirmationTask(task))
+      .map((task) => String(task.id))
+      .slice(0, 60)),
     api.getScreenshots(50, options),
   ];
   if (includePending) requests.push(api.getPendingDevices(options));

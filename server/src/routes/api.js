@@ -32,6 +32,13 @@ const SQL_TASKS_RECENT =
   'SELECT t.id, t.device_id, d.device AS device, t.type, t.params, t.status, ' +
   't.created_at, t.dispatched_at, t.finished_at, t.payload_path ' +
   'FROM tasks t LEFT JOIN devices d ON d.id = t.device_id ORDER BY t.created_at DESC, t.rowid DESC LIMIT ?';
+// 按 id 补查（列同上；IN 占位符由调用处按个数拼接）
+const SQL_TASKS_BY_IDS_PREFIX =
+  'SELECT t.id, t.device_id, d.device AS device, t.type, t.params, t.status, ' +
+  't.created_at, t.dispatched_at, t.finished_at, t.payload_path ' +
+  'FROM tasks t LEFT JOIN devices d ON d.id = t.device_id WHERE t.id IN (';
+const TASKS_IDS_MAX = 60;
+const TASK_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 // 截图元数据列表（JOIN devices 带出设备名；id 为 rowid 别名即时间序，倒序取最新）
 const SQL_SCREENSHOTS_RECENT =
   'SELECT s.id, s.device_id, d.device AS device, s.task_id, s.size, s.created_at ' +
@@ -185,7 +192,22 @@ export default async function apiRoutes(fastify, opts) {
       }
       limit = Math.min(n, TASKS_MAX_LIMIT);
     }
+    // ?ids=a,b：额外带回指定任务的最新状态（前端本地保存的在途任务可能已被 HeartBeat 挤出最近 N 条，
+    // 只靠最近列表永远看不到它终结 → 页面一直显示「进行中」）。最多 TASKS_IDS_MAX 个，非法字符直接 400。
+    let ids = [];
+    if (request.query?.ids !== undefined) {
+      ids = [...new Set(String(request.query.ids).split(',').filter(Boolean))];
+      if (ids.length > TASKS_IDS_MAX || ids.some((id) => !TASK_ID_PATTERN.test(id))) {
+        return reply.code(400).send({ error: 'bad_ids' });
+      }
+    }
     const tasks = db.prepare(SQL_TASKS_RECENT).all(limit);
+    const seen = new Set(tasks.map((task) => task.id));
+    const missing = ids.filter((id) => !seen.has(id));
+    if (missing.length > 0) {
+      const sql = SQL_TASKS_BY_IDS_PREFIX + missing.map(() => '?').join(',') + ')';
+      tasks.push(...db.prepare(sql).all(...missing));
+    }
     return { count: tasks.length, limit, tasks };
   });
 
