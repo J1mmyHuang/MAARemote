@@ -280,7 +280,10 @@ export class ApiClient {
   }
 
   getOverview(options) { return this.request('/api/overview', options); }
-  getTasks(limit = 50, options) { return this.request(`/api/tasks?limit=${encodeURIComponent(limit)}`, options); }
+  getTasks(limit = 50, options, ids = []) {
+    const extra = ids.length > 0 ? `&ids=${encodeURIComponent(ids.join(','))}` : '';
+    return this.request(`/api/tasks?limit=${encodeURIComponent(limit)}${extra}`, options);
+  }
   sendTask(task, options) { return this.request('/api/tasks', { ...options, method: 'POST', body: task }); }
   getScreenshots(limit = 50, options) { return this.request(`/api/screenshots?limit=${encodeURIComponent(limit)}`, options); }
   getPendingDevices(options) { return this.request('/api/devices/pending', options); }
